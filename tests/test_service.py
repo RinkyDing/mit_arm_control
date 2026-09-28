@@ -70,7 +70,7 @@ class ServiceTests(unittest.TestCase):
         with ArmClient(self.path) as client, ArmClient(self.path,'observer') as observer:
             with self.assertRaises(RuntimeError): ArmClient(self.path).connect()
             with self.assertRaises(RuntimeError): observer._rpc('stop')
-            client.arm(supported=True,zero_pose=True)
+            client.arm(workspace_ready=True,zero_pose=True)
             client.submit(self.initial())
             self.await_state(observer,'RUNNING')
             client.close()
@@ -81,7 +81,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_expired_algorithm_not_automatic_resume_and_explicit_reset(self):
         with ArmClient(self.path) as client:
-            client.arm(supported=True,zero_pose=True)
+            client.arm(workspace_ready=True,zero_pose=True)
             client.submit(self.initial())
             s=self.await_state(client,'FAULT')
             self.assertIn('expired',s['reason'])
@@ -97,7 +97,7 @@ import sys,time
 from mit_arm_control import ArmClient
 from mit_arm_control.config import NAMES
 c=ArmClient(sys.argv[1]).connect()
-c.arm(supported=True,zero_pose=True)
+c.arm(workspace_ready=True,zero_pose=True)
 x={n:dict(q_des=0.,dq_des=0.,kp=2.,kd=.1,tau_ff=0.) for n in NAMES}
 while True:
  c.submit(x)
@@ -132,7 +132,7 @@ while True:
 
     def test_shutdown_signal_while_armed_confirms_disable(self):
         with ArmClient(self.path) as client:
-            client.arm(supported=True,zero_pose=True)
+            client.arm(workspace_ready=True,zero_pose=True)
             client.submit(self.initial())
             self.await_state(client,'RUNNING')
             self.process.send_signal(signal.SIGTERM)

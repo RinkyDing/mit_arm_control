@@ -76,7 +76,7 @@ class Controller:
         self.skipped = 0
         self.events = []
         self.mode_verified = {}
-        self.support_confirmed = False
+        self.workspace_confirmed = False
         self.next_diagnostic = 0.
         self.diagnostic_error = None
 
@@ -179,18 +179,18 @@ class Controller:
         if pending:
             raise SafetyError(f"STOP UNCONFIRMED: {list(pending)}; last I/O error={last_error}")
 
-    def arm(self, supported=False, zero_pose=False):
+    def arm(self, workspace_ready=False, zero_pose=False):
         if self.state != 'IDLE':
             raise SafetyError('arm requires IDLE; faults require explicit reset')
         errors = readiness(self.config, self.hardware)
-        if errors or supported is not True or zero_pose is not True:
-            raise SafetyError('; '.join(errors) or 'support and zero-pose confirmations required')
+        if errors or workspace_ready is not True or zero_pose is not True:
+            raise SafetyError('; '.join(errors) or 'workspace and fixed zero-pose confirmations required')
         self.reason, self.stop_confirmed = None, None
         self.command = self.previous_command = None
         self.metrics = {j['name']: Metrics() for j in self.config['joints']}
         self.started = self.finished = None
         self.skipped = 0
-        self.support_confirmed = True
+        self.workspace_confirmed = True
         self.transition('ARMING')
         try:
             # Check all mappings without enabling any joint.
@@ -265,7 +265,7 @@ class Controller:
             # Faults remain latched. Low-rate status queries may show recovery,
             # but never restore motion or re-enable a motor.
             try:
-                if self.state == 'FAULT' and self.support_confirmed and self.clock() >= self.next_diagnostic:
+                if self.state == 'FAULT' and self.workspace_confirmed and self.clock() >= self.next_diagnostic:
                     self.next_diagnostic = self.clock()+1.
                     for joint in self.config['joints']:
                         self.backend.refresh(joint)
@@ -319,7 +319,7 @@ class Controller:
             reason = self.reason if reason in self.reason else self.reason+'; '+reason
             fault = True
         self.command = None
-        if not self.support_confirmed:
+        if not self.workspace_confirmed:
             self.stop_confirmed = None
             self.transition('FAULT' if fault else 'IDLE', reason)
             return
@@ -338,7 +338,7 @@ class Controller:
         if self.state != 'FAULT':
             raise SafetyError('reset requires FAULT')
         # New disabled replies are required even if the previous stop succeeded.
-        if self.support_confirmed:
+        if self.workspace_confirmed:
             self.disable()
             self.stop_confirmed = True
         self.reason, self.command, self.previous_command = None, None, None
@@ -349,7 +349,7 @@ class Controller:
         elapsed = max(0., (self.finished if self.finished is not None else now)-(self.started or now))
         feedback = {name: dict(f, age_ms=(now-f['timestamp'])*1000) for name, f in self.backend.feedback.items()}
         return dict(version=1, state=self.state, reason=self.reason, stop_confirmed=self.stop_confirmed,
-                    supported_only=True, stop_required=self.support_confirmed, backend='socketcan' if self.hardware else 'simulation',
+                    supported_only=False, stop_required=self.workspace_confirmed, backend='socketcan' if self.hardware else 'simulation',
                     timestamp=now, elapsed=elapsed, skipped=self.skipped, last_seq=self.last_seq,
                     diagnostic_error=self.diagnostic_error,
                     mode_verified=dict(self.mode_verified), feedback=feedback,

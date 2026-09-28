@@ -61,8 +61,12 @@ class ArmClient:
             time.sleep(.01)
         raise TimeoutError(f'waiting for {target}; inspect service state')
 
-    def arm(self, *, supported, zero_pose, timeout=15.):
-        ack = self._rpc('arm', supported=supported, zero_pose=zero_pose)
+    def arm(self, *, workspace_ready=None, zero_pose, timeout=15., supported=None):
+        # Legacy supported=True remains a valid prepared-workspace confirmation.
+        if workspace_ready is None:
+            workspace_ready = supported
+        ack = self._rpc('arm', workspace_ready=workspace_ready,
+                        supported=workspace_ready, zero_pose=zero_pose)
         # READY is deliberately disabled. The first valid command enables motors.
         return self._wait('READY', timeout, ack['ticket'])
 

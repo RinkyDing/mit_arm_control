@@ -12,7 +12,7 @@ a = p.parse_args()
 with ArmClient(a.socket) as client:
     if client.get_state()['backend'] != 'simulation':
         raise RuntimeError('this example is only for the simulator')
-    client.arm(supported=True, zero_pose=True)  # virtual confirmations only
+    client.arm(workspace_ready=True, zero_pose=True)  # virtual confirmations only
     initial = {n: dict(q_des=0., dq_des=0., kp=2., kd=.1, tau_ff=0.) for n in NAMES}
     client.submit(initial)
     begin = time.monotonic()

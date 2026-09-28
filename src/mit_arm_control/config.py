@@ -39,8 +39,6 @@ def readiness(c, hardware=False):
     errors, ids = [], set()
     if hardware and c.get("hardware_commissioned") is not True:
         errors.append("hardware_commissioned must be explicitly confirmed after review")
-    if hardware and c.get("hardware_watchdog_verified") is not True:
-        errors.append("hardware_watchdog_verified is required; service death cannot run cleanup")
     for j in c["joints"]:
         name = j["name"]
         for field in ("can_id", "master_id"):

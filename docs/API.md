@@ -14,7 +14,7 @@ from mit_arm_control import ArmClient
 client = ArmClient('/tmp/mit-arm-control.sock').connect()
 state = client.get_state()
 # 以下确认必须来自现场操作者，不能由算法在实机上无条件写 True。
-client.arm(supported=True, zero_pose=True)
+client.arm(workspace_ready=True, zero_pose=True)
 # arm 返回 READY，此时电机仍失能，等待初始有效目标。
 client.submit(all_seven_joint_targets)
 state = client.get_state()
@@ -27,7 +27,7 @@ client.close()
 | --- | --- |
 | connect() | 连接并获得控制权，不触发电机动作；第二个控制客户端被拒绝 |
 | get_state() | 最新反馈快照、反馈年龄、状态、故障、配置错误和统计；未观测轴不会伪造为零 |
-| arm(supported, zero_pose) | 在完整配置及双重确认后校验量程、失能静止、设零验证、逐轴模式确认；返回 READY |
+| arm(workspace_ready, zero_pose) | 在完整配置及双重确认后校验量程、失能静止、设零验证、逐轴模式确认；返回 READY |
 | submit(joints, timestamp=None, sequence=None) | 完整七轴 MIT 目标；SDK 默认生成主机 monotonic 时间和递增序号 |
 | stop() | 请求全体失能并等待本次请求结果；未确认抛异常；未曾 arm 的会话不写电机、不声称失能已确认 |
 | reset_fault() | 要求 FAULT；曾启动时重新取得失能反馈，返回 IDLE，不自动恢复运动 |
@@ -71,9 +71,9 @@ IDLE → ARMING → READY → RUNNING ⇄ DEGRADED
 FAULT → 显式 reset_fault + 失能确认 → IDLE
 ```
 
-没有自动恢复使能。READY 可以等待算法，电机保持失能；50 ms 命令超时从有效运动命令控制阶段开始。未启用过的会话掉线不操作电机。进入 FAULT 后恢复连接仍需 reset_fault、重新确认支撑与零姿态，再 arm。
+没有自动恢复使能。READY 可以等待算法，电机保持失能；50 ms 命令超时从有效运动命令控制阶段开始。未启用过的会话掉线不操作电机。进入 FAULT 后恢复连接仍需 reset_fault、重新确认缓冲工作区域与固定零姿态，再 arm。
 
-服务 SIGINT/SIGTERM 会先停止电机再关闭日志。SIGKILL、内核崩溃、断电无法执行 Python 清理，必须依靠机械支撑及经核实的驱动器通信保护。
+服务 SIGINT/SIGTERM 会先停止电机再关闭日志。SIGKILL、内核崩溃、断电无法执行 Python 清理，此时本版不能保证失能命令送达；不配置设备侧超时保护是当前实验边界。
 
 ## 反馈与统计
 

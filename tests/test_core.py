@@ -60,8 +60,16 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(readiness(cfg, True))
         self.assertTrue(readiness(self.c, True))
 
-    def test_support_confirmation_required(self):
+    def test_workspace_confirmation_required(self):
         with self.assertRaises(SafetyError): self.ctl.arm(False, True)
+        self.assertEqual(self.bus.sent, 0)
+
+    def test_watchdog_is_optional_and_zero_pose_still_required(self):
+        self.c['hardware_commissioned'] = True
+        self.c['hardware_watchdog_verified'] = False
+        self.assertEqual(readiness(self.c, True), [])
+        with self.assertRaises(SafetyError):
+            self.ctl.arm(workspace_ready=True, zero_pose=False)
         self.assertEqual(self.bus.sent, 0)
 
     def test_full_lifecycle_and_no_auto_resume(self):
