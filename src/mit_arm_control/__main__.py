@@ -17,6 +17,7 @@ def main():
     parser.add_argument('--final-state', default='final-state.json', help='durable shutdown report')
     args = parser.parse_args()
     c = load_config(args.config)
+    # 纯配置检查不打开 CAN，适合先查看仍缺哪些参数。
     if args.operation == 'check-config':
         errors = readiness(c, args.hardware)
         print(json.dumps({'ready': not errors, 'errors': errors}, ensure_ascii=False, indent=2))
@@ -28,7 +29,7 @@ def main():
                   and type(j.get('master_id')) is int and j.get('bus')]
         if not joints:
             parser.error('no fully specified IDs to query')
-        # No controller object and no mode writes, zero, enable or disable.
+        # 只读诊断不构造控制器，也不写模式、归零、使能或失能。
         locks = hardware_locks(dict(c, joints=joints), commissioned=False)
         bus = None
         try:

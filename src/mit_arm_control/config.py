@@ -3,7 +3,9 @@ import json
 import math
 from pathlib import Path
 
+# SDK 轴顺序固定；gripper 对应用户所称 J7。
 NAMES = ("J1", "J2", "J3", "J4", "J5", "J6", "gripper")
+# 电机协议量程 (位置 rad, 速度 rad/s, 力矩 N·m)，不等于机械安全限位。
 MODELS = {"4310_48V": (12.5, 50.0, 10.0), "4340_48V": (12.5, 20.0, 28.0)}
 LIMIT_KEYS = ("q_min", "q_max", "dq_max", "tau_max", "kp_max", "kd_max",
               "q_rate", "dq_rate", "kp_rate", "kd_rate", "tau_rate", "temperature_max")
@@ -36,6 +38,7 @@ def load_config(path):
 
 
 def readiness(c, hardware=False):
+    # 汇总所有缺项供界面展示；未知方向、零位或限制不会被猜测填充。
     errors, ids = [], set()
     if hardware and c.get("hardware_commissioned") is not True:
         errors.append("hardware_commissioned must be explicitly confirmed after review")

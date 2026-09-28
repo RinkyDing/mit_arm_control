@@ -8,6 +8,7 @@ from . import protocol as p
 from .config import MODELS
 
 
+# 实机适配层：只负责协议收发，生命周期由 Controller 编排。
 class SocketCAN:
     def __init__(self, joints, clock=time.monotonic):
         self.joints, self.clock = joints, clock
@@ -19,8 +20,7 @@ class SocketCAN:
                 s = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
                 self.sockets[bus] = s
                 s.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FD_FRAMES, 1)
-                # Linux timestamp ancillary data prevents queued old frames from
-                # looking fresh simply because Python processed them just now.
+                # 使用内核接收时间戳，避免把队列中积压的旧帧误认为新反馈。
                 s.setsockopt(socket.SOL_SOCKET, getattr(socket, 'SO_TIMESTAMPNS', 35), 1)
                 s.setblocking(False)
                 s.bind((bus,))
@@ -29,8 +29,11 @@ class SocketCAN:
             raise
 
     def send(self, frame):
-        raw = struct.pack('=IBBBB64s', frame.can_id, len(frame.data), 1, 0, 0,
-                          frame.data.ljust(64, b'\x00'))
+        # Linux canfd_frame 共 72 字节；flags=1 开启 BRS，MIT 有效载荷仍为 8 字节。
+        raw = struct.pack(
+            '=IBBBB64s', frame.can_id, len(frame.data), 1, 0, 0,
+            frame.data.ljust(64, b'\x00'),
+        )
         if self.sockets[frame.bus].send(raw) != 72:
             raise OSError('short CAN FD write')
 
@@ -38,7 +41,7 @@ class SocketCAN:
         ready, _, _ = select.select(list(self.sockets.values()), [], [], timeout)
         if not ready:
             return False
-        # One frame per poll; the owner budgets receive work against TX deadline.
+        # 每次最多处理一帧；控制循环决定接收预算，多总线就绪时轮询选择。
         s = ready[self._round_robin % len(ready)]
         self._round_robin += 1
         raw, ancillary, flags, _ = s.recvmsg(72, 128)
@@ -48,15 +51,16 @@ class SocketCAN:
         for level, kind, data in ancillary:
             if level == socket.SOL_SOCKET and kind == getattr(socket, 'SO_TIMESTAMPNS', 35):
                 sec, ns = struct.unpack('@ll', data[:struct.calcsize('@ll')])
+                # 内核时间为墙上时钟；用样本年龄换算到控制器的单调时钟。
                 age = time.time()-(sec+ns/1e9)
                 if age >= -.001:
                     received_at = self.clock()-max(0., age)
         if received_at is None:
-            return True  # never label an un-timestamped hardware sample as fresh
+            return True  # 缺失时间戳的实机帧不能刷新反馈有效期。
         if len(raw) not in (16, 72):
             return True
         can_id = struct.unpack_from('=I', raw)[0]
-        if can_id & 0xE0000000:  # reject EFF, RTR and CAN error frames as feedback
+        if can_id & 0xE0000000:  # 扩展帧、远程帧及 CAN 错误帧不作为电机反馈。
             return True
         size = raw[4]
         if size > (64 if len(raw) == 72 else 8):
@@ -64,13 +68,14 @@ class SocketCAN:
         bus = next(b for b, sock in self.sockets.items() if sock is s)
         frame = p.Frame(bus, can_id, raw[8:8+size], len(raw) == 72, raw[5])
         for j in self.joints:
-            # Diagnostics may read registers before calibration is configured.
+            # 只读诊断允许尚未填写标定；这里的解析默认值不代表实机配置已完成。
             parser_joint = dict(j, direction=j.get('direction') or 1,
                                 zero_joint=j.get('zero_joint') or 0)
             decoded = p.decode(parser_joint, frame)
             if decoded is None:
                 continue
             kind, data = decoded
+            # 参数事务与运动反馈分流：参数回复不能刷新运动反馈的时间或计数。
             if kind == 'parameter':
                 op, rid, value = data
                 self.parameters[(j['name'], op, rid)] = (self.clock(), value)
@@ -91,7 +96,8 @@ class SocketCAN:
         self.send(p.pack_mit(j, target))
 
     def register(self, j, op, rid, value=0, interrupt=lambda: None):
-        # Sequential transactions only; a cached/late value cannot satisfy a new read.
+        # 逐台串行参数事务：先排空并清除旧缓存，再等待本轮响应。
+        # 协议无事务序号，不据此宣称能严格区分任意迟到的同类型回复。
         for _ in range(128):
             if not self.poll(0):
                 break
@@ -112,6 +118,7 @@ class SocketCAN:
         self.sockets.clear()
 
 
+# 仅用于流程和故障注入验证，不是实机动力学模型。
 class SimBackend:
     """Functional simulation, NOT a dynamics/safety certification model.
 
@@ -128,6 +135,7 @@ class SimBackend:
             pr, vr, tr = MODELS[j['model']]
             self.registers[j['name']] = {10: 1, 21: pr, 22: vr, 23: tr}
         self.queue = deque(maxlen=256)
+        # 测试可注入持续/单次漏收、发送失败和忽略失能，不影响实机后端。
         self.drop = set()
         self.drop_next = {}
         self.send_error = False
@@ -179,7 +187,7 @@ class SimBackend:
         self._reply(j)
 
     def mit(self, j, target):
-        p.pack_mit(j, target)  # exercise the real codec/ranges, without any socket
+        p.pack_mit(j, target)  # 复用真实编码和量程校验，但不访问 CAN。
         self._send()
         s = self.state[j['name']]
         if s['status'] == 1:

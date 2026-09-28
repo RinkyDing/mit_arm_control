@@ -14,6 +14,8 @@ from .controller import Controller
 from .ipc import Mailbox, IPCServer, AsyncLogger
 
 
+
+# 同一项目内按总线互斥；这里只核对接口参数，不修改系统 CAN 配置。
 def hardware_locks(config, commissioned=True):
     errors = readiness(config, hardware=True) if commissioned else []
     if errors:
@@ -41,8 +43,7 @@ def hardware_locks(config, commissioned=True):
 
 
 def run(config, socket_path, hardware=False, result_path=None):
-    # Simulation is the default. Real bus access needs explicit --hardware and
-    # complete commissioning config, but still does not enable at construction.
+    # 默认模拟后端；实机需显式开启并完成配置，构造后端本身不会使能。
     errors = readiness(config, hardware)
     if errors:
         raise ValueError('; '.join(errors))
@@ -54,6 +55,7 @@ def run(config, socket_path, hardware=False, result_path=None):
 
     def request_exit(signum, frame):
         nonlocal exiting
+        # 信号处理只请求退出；实际 CAN 停止事务由控制循环执行。
         exiting = True
         mailbox.request_stop(f'service signal {signum}')
 
@@ -73,6 +75,7 @@ def run(config, socket_path, hardware=False, result_path=None):
             old_signals[sig] = signal.signal(sig, request_exit)
         next_snapshot = next_log = time.monotonic()
         while not exiting:
+            # 优先级：停止请求 → 生命周期动作/最新目标 → 定时通信 → 统计。
             if mailbox.stop.is_set():
                 reason, fault = mailbox.stop_reason, mailbox.fault
                 mailbox.take_command()
@@ -81,7 +84,7 @@ def run(config, socket_path, hardware=False, result_path=None):
                         mailbox.actions.get_nowait()
                     except queue.Empty:
                         break
-                # Never auto-reset a latched fault on a second stop/disconnect.
+                # 再次停止或断联不能清除已锁存的故障。
                 controller.stop(reason, fault=fault or controller.state == 'FAULT')
                 mailbox.completed_ticket = max(mailbox.completed_ticket, mailbox.stop_ticket)
                 mailbox.stop_ticket = 0
@@ -97,7 +100,10 @@ def run(config, socket_path, hardware=False, result_path=None):
                     try:
                         mailbox.take_command()
                         if op == 'arm':
-                            controller.arm(args.get('workspace_ready', args.get('supported')), args.get('zero_pose'))
+                            controller.arm(
+                                args.get('workspace_ready', args.get('supported')),
+                                args.get('zero_pose'),
+                            )
                         else:
                             controller.reset_fault()
                     except Exception as exc:
@@ -112,8 +118,7 @@ def run(config, socket_path, hardware=False, result_path=None):
                         mailbox.last_error = str(exc)
                     publish()
                 controller.step()
-                # Publish only lightweight feedback each loop; histogram/statistics
-                # snapshots are less frequent and logging never runs here.
+                # 每轮仅更新轻量反馈；完整统计降低发布频率，日志写入另在线程执行。
                 mailbox.snapshot = dict(mailbox.snapshot,
                     feedback={n: dict(f) for n, f in backend.feedback.items()},
                     feedback_snapshot_timestamp=time.monotonic())
@@ -127,8 +132,8 @@ def run(config, socket_path, hardware=False, result_path=None):
             remaining = controller.next_tick-now if controller.state in controller.ACTIVE else .001
             time.sleep(max(0., min(.0002, remaining)))
     finally:
-        # Stop before waiting on IPC, logger or disk. Even an unexpected service
-        # exception attempts confirmation; SIGKILL/power loss cannot run finally.
+        # 先停止电机，再关闭 IPC/日志并写磁盘。
+        # 可捕获异常也会到这里；SIGKILL 或掉电无法执行 finally。
         if controller is not None:
             if controller.state not in ('IDLE',) or controller.stop_confirmed is False:
                 controller.stop('service exit', fault=controller.state == 'FAULT')
@@ -143,7 +148,7 @@ def run(config, socket_path, hardware=False, result_path=None):
         for sig, handler in old_signals.items():
             signal.signal(sig, handler)
         if result_path and controller is not None:
-            # Final result is separate from the lossy periodic telemetry channel.
+            # 最终停止结果单独保存，不依赖可能丢弃的周期日志。
             path = Path(result_path)
             temporary = path.with_name(path.name+'.tmp')
             temporary.write_text(json.dumps(mailbox.snapshot, ensure_ascii=False, indent=2, allow_nan=False))

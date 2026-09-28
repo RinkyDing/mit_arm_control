@@ -9,6 +9,7 @@ class SafetyError(ValueError):
 
 
 def validate_command(c, cmd, now, previous=None):
+    # c=配置、cmd=整组目标；先核对信封/时效/顺序，再逐轴检查数值与变化率。
     if not isinstance(cmd, dict) or set(cmd) != {'seq', 'timestamp', 'joints'}:
         raise SafetyError('command requires seq, timestamp, joints')
     seq, stamp = cmd['seq'], cmd['timestamp']
@@ -30,6 +31,7 @@ def validate_command(c, cmd, now, previous=None):
                 and 0 <= t['kd'] <= lim['kd_max']):
             raise SafetyError(f'{name}: command limit violation')
         if previous:
+            # 时间间隔封顶为命令有效期，防止停更后获得无限大的变化额度。
             dt = min(stamp-previous['timestamp'], c['command_timeout'])
             for field, rate in zip(FIELDS, ('q_rate', 'dq_rate', 'kp_rate', 'kd_rate', 'tau_rate')):
                 if abs(t[field]-previous['joints'][name][field]) > lim[rate]*dt+1e-9:
@@ -37,6 +39,7 @@ def validate_command(c, cmd, now, previous=None):
 
 
 def check_feedback(c, feedback, now, enabled=True):
+    # 只使用接收时间判断新鲜度，发送成功不能延长反馈有效期。
     for j in c['joints']:
         name, lim = j['name'], j['limits']
         f = feedback.get(name)
@@ -53,9 +56,14 @@ def check_feedback(c, feedback, now, enabled=True):
 
 
 def check_effort(c, cmd, feedback):
+    # MIT 力矩估算只作为主机侧检查，不是驱动器瞬时力矩硬限制。
     for j in c['joints']:
         name = j['name']
         t, f = cmd['joints'][name], feedback[name]
-        effort = t['kp']*(t['q_des']-f['q'])+t['kd']*(t['dq_des']-f['dq'])+t['tau_ff']
+        effort = (
+            t['kp'] * (t['q_des'] - f['q'])
+            + t['kd'] * (t['dq_des'] - f['dq'])
+            + t['tau_ff']
+        )
         if not math.isfinite(effort) or abs(effort) > j['limits']['tau_max']:
             raise SafetyError(f'{name}: estimated MIT torque limit')

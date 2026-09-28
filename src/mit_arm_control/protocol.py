@@ -4,6 +4,7 @@ import math
 import struct
 from .config import MODELS
 
+# 参数操作码与电机特殊命令；本模块只编解码，不进行总线 I/O。
 READ, WRITE, STATUS = 0x33, 0x55, 0xCC
 DISABLE, ENABLE, ZERO = 0xFD, 0xFC, 0xFE
 FIELDS = ("q_des", "dq_des", "kp", "kd", "tau_ff")
@@ -15,10 +16,11 @@ class Frame:
     can_id: int
     data: bytes
     fd: bool = True
-    flags: int = 1
+    flags: int = 1  # CAN FD 的 BRS 位：数据段使用配置的数据位速率。
 
 
 def quantize(x, lo, hi, bits):
+    # 超量程直接报错，不静默裁剪；浮点值线性映射为无符号整数字段。
     if not math.isfinite(x) or not lo <= x <= hi:
         raise ValueError(f"out of protocol range: {x}")
     return int((x-lo)*((1 << bits)-1)/(hi-lo))
@@ -30,15 +32,28 @@ def unquantize(x, lo, hi, bits):
 
 def pack_mit(j, target):
     p, v, t = MODELS[j["model"]]
+    # p/v/t 为协议量程；s 为方向，z 为固定零姿态在算法坐标中的角度。
     s, z = j["direction"], j["zero_joint"]
+    # 发送前从关节坐标变换到电机坐标，反馈解码执行反向变换。
     q = quantize(s*(target["q_des"]-z), -p, p, 16)
     dq = quantize(s*target["dq_des"], -v, v, 12)
     kp = quantize(target["kp"], 0, 500, 12)
     kd = quantize(target["kd"], 0, 5, 12)
     tau = quantize(s*target["tau_ff"], -t, t, 12)
-    return Frame(j["bus"], j["can_id"], bytes((q >> 8, q & 255, dq >> 4,
-                 (dq & 15) << 4 | kp >> 8, kp & 255, kd >> 4,
-                 (kd & 15) << 4 | tau >> 8, tau & 255)))
+    # 8 字节位布局：位置 16 位，其余速度、Kp、Kd、力矩各 12 位。
+    return Frame(
+        j["bus"], j["can_id"],
+        bytes((
+            q >> 8,
+            q & 255,
+            dq >> 4,
+            (dq & 15) << 4 | kp >> 8,
+            kp & 255,
+            kd >> 4,
+            (kd & 15) << 4 | tau >> 8,
+            tau & 255,
+        )),
+    )
 
 
 def special(j, code):
@@ -56,6 +71,7 @@ def decode(j, frame):
     """Return parameter or feedback; never let a parameter refresh liveness."""
     if frame.bus != j["bus"] or frame.can_id != j["master_id"]:
         return None
+    # 先按总线和反馈 ID 分流，再识别参数回复；剩余数据才按运动反馈解析。
     d = frame.data
     if len(d) == 8 and int.from_bytes(d[:2], 'little') == j["can_id"] and d[2] in (READ, WRITE):
         rid = d[3]

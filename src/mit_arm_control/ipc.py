@@ -11,6 +11,7 @@ from .safety import validate_command
 VERSION, MAX_MESSAGE = 1, 32768
 
 
+# 线程交接点：生命周期动作有界排队，运动目标仅保留最新一份。
 class Mailbox:
     def __init__(self):
         self.lock = threading.Lock()
@@ -30,15 +31,18 @@ class Mailbox:
         self.stop.set()
 
     def put_command(self, command):
+        # 覆盖旧目标，不积压待执行的历史轨迹。
         with self.lock:
             self.latest = command
 
     def take_command(self):
+        # 取出并清空在同一把锁内完成，避免覆盖新提交的目标。
         with self.lock:
             command, self.latest = self.latest, None
         return command
 
 
+# IPC 线程仅校验/交付请求；电机操作始终由控制服务主循环执行。
 class IPCServer:
     def __init__(self, path, mailbox, config):
         self.path, self.mailbox, self.config = path, mailbox, config
@@ -51,7 +55,7 @@ class IPCServer:
             raise RuntimeError(f'socket path already exists: {path}; check service before removing stale socket')
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         self.server.bind(path)
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o600)  # 仅当前用户可读写；不是同用户进程间的权限隔离。
         self.server.listen(8)
         self.server.setblocking(False)
         self.selector.register(self.server, selectors.EVENT_READ)
@@ -59,6 +63,7 @@ class IPCServer:
         self.thread.start()
 
     def disconnect(self, client):
+        # 控制客户端掉线请求全组停止；只读观察者掉线不影响运动。
         if self.owner is client:
             self.owner = None
             self.previous = None
@@ -91,7 +96,7 @@ class IPCServer:
         if self.clients[client] is None:
             raise ValueError('connect first')
         if op == 'get_state':
-            # Immutable-by-convention snapshot, replaced by the control owner.
+            # 控制循环整份替换快照；读取时重新计算反馈年龄，不冒充新采样。
             snap = self.mailbox.snapshot
             return dict(snap, last_request_error=self.mailbox.last_error,
                         completed_ticket=self.mailbox.completed_ticket,
@@ -104,6 +109,7 @@ class IPCServer:
             self.mailbox.stop_ticket = self.mailbox.serial
             self.mailbox.request_stop('operator stop')
             return {'queued': True, 'ticket': self.mailbox.serial}
+        # 每条命令先校验再覆盖目标槽；回执只表示接收，不表示电机执行。
         if op == 'submit':
             if self.mailbox.snapshot['state'] not in ('READY', 'RUNNING', 'DEGRADED'):
                 raise ValueError('submit requires READY/RUNNING/DEGRADED')
@@ -116,6 +122,7 @@ class IPCServer:
             self.previous = cmd
             self.mailbox.put_command(cmd)
             return {'queued': True, 'seq': cmd['seq']}
+        # ticket 标识本次生命周期请求，SDK 不能用上一次完成状态作为确认。
         if op in ('arm', 'reset_fault'):
             self.mailbox.last_error = None
             self.mailbox.serial += 1
@@ -175,8 +182,7 @@ class IPCServer:
 
 class AsyncLogger:
     def __init__(self, sink=None):
-        # A separate nonblocking file description avoids blocking buffered
-        # stdout's interpreter lock during shutdown when a pipe stops draining.
+        # 单独打开非阻塞输出，避免终端管道堵塞后，缓冲 stdout 锁拖住退出。
         self.output_fd = None
         if sink is None:
             try:
@@ -199,6 +205,7 @@ class AsyncLogger:
             data = data[written:]
 
     def offer(self, snapshot):
+        # 控制线程只尝试入队；日志满时丢统计，不等待消费者。
         try:
             self.queue.put_nowait(snapshot)
         except queue.Full:
@@ -217,7 +224,7 @@ class AsyncLogger:
 
     def close(self):
         self.done.set()
-        self.thread.join(.1)  # blocked terminal must never block shutdown
+        self.thread.join(.1)  # 有界等待；终端阻塞不能无限拖延服务退出。
         if self.output_fd is not None and not self.thread.is_alive():
             os.close(self.output_fd)
             self.output_fd = None

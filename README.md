@@ -47,6 +47,8 @@ docs/            接口、配置、安全边界、来源和改动报告
 
 ## 文档
 
+- [代码阅读路线](docs/CODE_READING.md)
+
 - [算法接口与状态机](docs/API.md)
 - [配置、固定姿态联调与故障边界](docs/COMMISSIONING.md)
 - [架构、改动与验证报告](docs/REPORT.md)

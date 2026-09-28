@@ -5,10 +5,12 @@ import time
 from .ipc import VERSION, MAX_MESSAGE
 
 
+# 算法侧接口；一个实例由一个线程顺序调用，内部不直接访问 CAN。
 class ArmClient:
     def __init__(self, path='/tmp/mit-arm-control.sock', role='control'):
         self.path, self.role = path, role
         self.socket = None
+        # request_id 配对 IPC 请求/响应；sequence 排序运动目标，均不是电机帧序号。
         self.request_id, self.sequence = 0, 0
 
     def connect(self):
@@ -26,6 +28,7 @@ class ArmClient:
             raise
 
     def _rpc(self, op, **kwargs):
+        # 同步等待服务回执；服务回执不等于电机已执行目标。
         if self.socket is None:
             raise RuntimeError('connect first')
         self.request_id += 1
@@ -48,6 +51,7 @@ class ArmClient:
         return self._rpc('get_state')
 
     def _wait(self, target, timeout, ticket=0, reject_fault=True):
+        # 既检查目标状态，也检查本次 ticket 已完成，避免读到上一次的结果。
         deadline = time.monotonic()+timeout
         while time.monotonic() < deadline:
             state = self.get_state()
@@ -62,12 +66,12 @@ class ArmClient:
         raise TimeoutError(f'waiting for {target}; inspect service state')
 
     def arm(self, *, workspace_ready=None, zero_pose, timeout=15., supported=None):
-        # Legacy supported=True remains a valid prepared-workspace confirmation.
+        # 兼容旧 supported 参数，新代码使用 workspace_ready。
         if workspace_ready is None:
             workspace_ready = supported
         ack = self._rpc('arm', workspace_ready=workspace_ready,
                         supported=workspace_ready, zero_pose=zero_pose)
-        # READY is deliberately disabled. The first valid command enables motors.
+        # arm 仅等待 READY；首条有效静止目标提交后才执行使能。
         return self._wait('READY', timeout, ack['ticket'])
 
     def submit(self, joints, *, timestamp=None, sequence=None):
@@ -75,9 +79,10 @@ class ArmClient:
         result = self._rpc('submit', command=dict(seq=seq,
                            timestamp=time.monotonic() if timestamp is None else timestamp, joints=joints))
         self.sequence = max(self.sequence, seq+1)
-        return result  # queued, not a per-motor execution acknowledgement
+        return result  # 仅确认进入最新目标槽，不等待逐台电机执行。
 
     def stop(self, timeout=4.):
+        # stop 额外等待全组失能确认；超时或未确认会抛异常。
         ack = self._rpc('stop')
         deadline = time.monotonic()+timeout
         while time.monotonic() < deadline:
@@ -104,4 +109,4 @@ class ArmClient:
         return self.connect()
 
     def __exit__(self, *_):
-        self.close()  # owner disconnect also requests stop; explicit stop gives confirmation
+        self.close()  # 断联也请求停止；需要得到失能结果时应先显式调用 stop。
