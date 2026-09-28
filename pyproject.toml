@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mit-arm-control"
+version = "0.1.0"
+description = "Supported-bench MIT arm controller and local Python SDK"
+requires-python = ">=3.10"
+
+[project.scripts]
+mit-arm = "mit_arm_control.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
