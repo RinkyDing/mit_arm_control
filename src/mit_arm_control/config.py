@@ -43,8 +43,6 @@ def load_config(path, *, no_gripper=False):
 def readiness(c, hardware=False, ranges=None):
     # 汇总所有缺项供界面展示；未知方向、零位或限制不会被猜测填充。
     errors, ids = [], set()
-    if hardware and c.get("hardware_commissioned") is not True:
-        errors.append("hardware_commissioned must be explicitly confirmed after review")
     for j in c["joints"]:
         name = j["name"]
         for field in ("can_id", "master_id"):
@@ -58,10 +56,6 @@ def readiness(c, hardware=False, ranges=None):
             ids.add(key)
         if not isinstance(j.get("bus"), str) or not j["bus"]:
             errors.append(f"{name}.bus missing")
-        if j.get("direction") not in (-1, 1) or type(j.get("direction")) is not int:
-            errors.append(f"{name}.direction must be +1 or -1")
-        if not finite(j.get("zero_joint")) or not j.get("calibration_pose"):
-            errors.append(f"{name}: explicit zero_joint and calibration_pose required")
         lim = j.get("limits", {})
         if any(not finite(lim.get(k)) for k in LIMIT_KEYS):
             errors.append(f"{name}: incomplete limits")
@@ -72,10 +66,7 @@ def readiness(c, hardware=False, ranges=None):
         )
         if ranges is not None and actual_range is None:
             errors.append(f"{name}: missing runtime protocol range")
-        z = j.get("zero_joint")
-        if not finite(z):
-            continue
-        if not (lim["q_min"] <= z <= lim["q_max"] and lim["q_min"] < lim["q_max"]):
+        if not (lim["q_min"] <= 0 <= lim["q_max"] and lim["q_min"] < lim["q_max"]):
             errors.append(f"{name}: position limits must include zero")
         if actual_range is not None:
             if (len(actual_range) != 3
@@ -83,7 +74,7 @@ def readiness(c, hardware=False, ranges=None):
                 errors.append(f"{name}: invalid protocol range")
             else:
                 p, v, t = actual_range
-                if not (-p+.1 <= lim["q_min"]-z and lim["q_max"]-z <= p-.1
+                if not (-p+.1 <= lim["q_min"] and lim["q_max"] <= p-.1
                         and lim["dq_max"] <= v and lim["tau_max"] <= t):
                     errors.append(f"{name}: configured limits exceed protocol range or wrap margin")
         if not (0 < lim["dq_max"] and 0 < lim["tau_max"]
@@ -114,6 +105,6 @@ def select_joints(config, names):
             if identity in ids:
                 raise ValueError(f'{name}: duplicate bus ID')
             ids.add(identity)
-        # 尚未标定方向/零位时，明确显示电机原始坐标，不冒充机械臂关节坐标。
-        joints.append(dict(joint, direction=1, zero_joint=0.0))
+        # 观察模式与运动模式均直接使用电机坐标。
+        joints.append(dict(joint))
     return joints

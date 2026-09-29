@@ -5,7 +5,6 @@
   "feedback_timeout": 0.05,
   "stop_timeout": 2.0,
   "max_unobserved": 4,
-  "hardware_commissioned": false,
   "hardware_watchdog_verified": false,
   "joints": [
     {
@@ -14,9 +13,6 @@
       "bus": "can0",
       "can_id": 1,
       "master_id": 17,
-      "direction": 1,
-      "zero_joint": 0.0,
-      "calibration_pose": "SIMULATION ONLY: all axes at zero",
       "limits": {
         "q_min": -1.0,
         "q_max": 1.0,
@@ -38,9 +34,6 @@
       "bus": "can0",
       "can_id": 2,
       "master_id": 18,
-      "direction": 1,
-      "zero_joint": 0.0,
-      "calibration_pose": "SIMULATION ONLY: all axes at zero",
       "limits": {
         "q_min": -1.0,
         "q_max": 1.0,
@@ -62,9 +55,6 @@
       "bus": "can0",
       "can_id": 3,
       "master_id": 19,
-      "direction": 1,
-      "zero_joint": 0.0,
-      "calibration_pose": "SIMULATION ONLY: all axes at zero",
       "limits": {
         "q_min": -1.0,
         "q_max": 1.0,
@@ -86,9 +76,6 @@
       "bus": "can0",
       "can_id": 4,
       "master_id": 20,
-      "direction": 1,
-      "zero_joint": 0.0,
-      "calibration_pose": "SIMULATION ONLY: all axes at zero",
       "limits": {
         "q_min": -1.0,
         "q_max": 1.0,
@@ -110,9 +97,6 @@
       "bus": "can0",
       "can_id": 5,
       "master_id": 21,
-      "direction": 1,
-      "zero_joint": 0.0,
-      "calibration_pose": "SIMULATION ONLY: all axes at zero",
       "limits": {
         "q_min": -1.0,
         "q_max": 1.0,
@@ -134,9 +118,6 @@
       "bus": "can0",
       "can_id": 6,
       "master_id": 22,
-      "direction": 1,
-      "zero_joint": 0.0,
-      "calibration_pose": "SIMULATION ONLY: all axes at zero",
       "limits": {
         "q_min": -1.0,
         "q_max": 1.0,
@@ -158,9 +139,6 @@
       "bus": "can0",
       "can_id": 7,
       "master_id": 23,
-      "direction": 1,
-      "zero_joint": 0.0,
-      "calibration_pose": "SIMULATION ONLY: all axes at zero",
       "limits": {
         "q_min": -1.0,
         "q_max": 1.0,

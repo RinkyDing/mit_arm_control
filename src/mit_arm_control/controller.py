@@ -147,7 +147,7 @@ class Controller:
                     f = self.backend.feedback[j['name']]
                     if f['status'] != status or abs(f['dq']) > .1:
                         raise SafetyError(f"{j['name']}: expected stationary status={status}")
-                    if zero and abs(f['q']-j['zero_joint']) > .02:
+                    if zero and abs(f['q']) > .02:
                         raise SafetyError(f"{j['name']}: zero mismatch")
                 return
             if self.clock() >= next_request:

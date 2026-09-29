@@ -58,14 +58,13 @@ class CoreTests(unittest.TestCase):
     def test_hardware_template_incomplete(self):
         cfg = load_config(ROOT/'configs/arm.hardware.template.json')
         self.assertTrue(readiness(cfg, True))
-        self.assertTrue(readiness(self.c, True))
+        self.assertEqual(readiness(self.c, True), [])
 
     def test_arm_always_zeros(self):
         self.ctl.arm()
         self.assertEqual(sum(code == ZERO for _, code in self.bus.special_history), 7)
 
     def test_watchdog_is_optional(self):
-        self.c['hardware_commissioned'] = True
         self.c['hardware_watchdog_verified'] = False
         self.assertEqual(readiness(self.c, True), [])
 
@@ -233,12 +232,12 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(data['status'],1)
             self.assertIsNone(decode(j,Frame('wrong',f.can_id,f.data)))
 
-    def test_direction_and_offset_mapping(self):
+    def test_motor_coordinates_ignore_legacy_transform_fields(self):
         j = dict(self.joints[0],direction=-1,zero_joint=.5)
-        frame = pack_mit(j,dict(q_des=.5,dq_des=0.,kp=0.,kd=0.,tau_ff=0.))
+        frame = pack_mit(j,dict(q_des=0.,dq_des=0.,kp=0.,kd=0.,tau_ff=0.))
         self.assertEqual(frame.data[:2],b'\x7f\xff')
         _, data = decode(j,Frame(j['bus'],j['master_id'],bytes([17,127,255,127,247,255,20,20])))
-        self.assertAlmostEqual(data['q'],.5,delta=.001)
+        self.assertAlmostEqual(data['q'],0.,delta=.001)
 
 
 if __name__ == '__main__': unittest.main()

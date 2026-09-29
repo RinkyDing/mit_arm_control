@@ -73,7 +73,6 @@ class RuntimeRangeTests(unittest.TestCase):
         self.assertEqual(self.ctl.snapshot()['protocol_ranges']['J1']['vmax'], 35.)
 
     def test_hardware_offline_check_defers_actual_capacity_check(self):
-        self.c['hardware_commissioned'] = True
         self.c['joints'][0]['limits']['dq_max'] = 60.
         self.assertEqual(readiness(self.c, True), [])
         ranges = {j['name']: MODELS[j['model']] for j in self.c['joints']}
@@ -81,9 +80,9 @@ class RuntimeRangeTests(unittest.TestCase):
         ranges['J1'] = (12.5, 70., 10.)
         self.assertEqual(readiness(self.c, True, ranges=ranges), [])
 
-    def test_codec_uses_custom_ranges_for_both_directions(self):
+    def test_codec_uses_custom_ranges_without_coordinate_transform(self):
         joint = dict(self.c['joints'][0], direction=-1, zero_joint=.5)
-        target = dict(q_des=-5.5, dq_des=-15., kp=0., kd=0., tau_ff=-4.)
+        target = dict(q_des=6., dq_des=15., kp=0., kd=0., tau_ff=4.)
         frame = pack_mit(joint, target, (6., 15., 4.))
         self.assertEqual(frame.data[:3], bytes([255, 255, 255]))
         self.assertEqual(frame.data[3] >> 4, 15)
@@ -91,7 +90,7 @@ class RuntimeRangeTests(unittest.TestCase):
         self.assertEqual(frame.data[7], 255)
         reply = Frame(joint['bus'], joint['master_id'], bytes([17,255,255,255,255,255,25,25]))
         _, actual = decode(joint, reply, (6., 15., 4.))
-        self.assertEqual((actual['q'], actual['dq'], actual['tau']), (-5.5, -15., -4.))
+        self.assertEqual((actual['q'], actual['dq'], actual['tau']), (6., 15., 4.))
 
     def test_socketcan_uses_runtime_ranges_in_tx_and_rx(self):
         fixture = transport.TransportTests()

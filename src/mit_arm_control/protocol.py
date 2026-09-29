@@ -32,14 +32,12 @@ def unquantize(x, lo, hi, bits):
 
 def pack_mit(j, target, ranges=None):
     p, v, t = MODELS[j["model"]] if ranges is None else ranges
-    # p/v/t 为协议量程；s 为方向，z 为固定零姿态在算法坐标中的角度。
-    s, z = j["direction"], j["zero_joint"]
-    # 发送前从关节坐标变换到电机坐标，反馈解码执行反向变换。
-    q = quantize(s*(target["q_des"]-z), -p, p, 16)
-    dq = quantize(s*target["dq_des"], -v, v, 12)
+    # 直接使用电机坐标，不做方向、偏移或减速比变换。
+    q = quantize(target["q_des"], -p, p, 16)
+    dq = quantize(target["dq_des"], -v, v, 12)
     kp = quantize(target["kp"], 0, 500, 12)
     kd = quantize(target["kd"], 0, 5, 12)
-    tau = quantize(s*target["tau_ff"], -t, t, 12)
+    tau = quantize(target["tau_ff"], -t, t, 12)
     # 8 字节位布局：位置 16 位，其余速度、Kp、Kd、力矩各 12 位。
     return Frame(
         j["bus"], j["can_id"],
@@ -83,6 +81,6 @@ def decode(j, frame, ranges=None):
     q = unquantize(d[1] << 8 | d[2], -p, p, 16)
     dq = unquantize(d[3] << 4 | d[4] >> 4, -v, v, 12)
     tau = unquantize((d[4] & 15) << 8 | d[5], -t, t, 12)
-    return ("feedback", dict(q=j["direction"]*q+j["zero_joint"],
-            dq=j["direction"]*dq, tau=j["direction"]*tau,
+    return ("feedback", dict(q=q,
+            dq=dq, tau=tau,
             status=d[0] >> 4, mos_temperature=d[6], rotor_temperature=d[7]))

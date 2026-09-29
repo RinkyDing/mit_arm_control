@@ -70,10 +70,7 @@ class SocketCAN:
         bus = next(b for b, sock in self.sockets.items() if sock is s)
         frame = p.Frame(bus, can_id, raw[8:8+size], len(raw) == 72, raw[5])
         for j in self.joints:
-            # 只读诊断允许尚未填写标定；这里的解析默认值不代表实机配置已完成。
-            parser_joint = dict(j, direction=j.get('direction') or 1,
-                                zero_joint=j.get('zero_joint') or 0)
-            decoded = p.decode(parser_joint, frame, self.protocol_ranges.get(j['name']))
+            decoded = p.decode(j, frame, self.protocol_ranges.get(j['name']))
             if decoded is None:
                 continue
             kind, data = decoded
@@ -132,7 +129,7 @@ class SimBackend:
         # arm 成功读取全组量程后统一替换；启动前默认量程仅用于诊断解析。
         self.protocol_ranges = {}
         self.rx_seq = {j['name']: 0 for j in joints}
-        self.state = {j['name']: dict(q=j['zero_joint'], dq=0., tau=0., status=0,
+        self.state = {j['name']: dict(q=0., dq=0., tau=0., status=0,
                       mos_temperature=25, rotor_temperature=25) for j in joints}
         self.registers = {}
         for j in joints:
@@ -183,7 +180,7 @@ class SimBackend:
         elif code == p.ZERO:
             if state['status'] != 0:
                 raise RuntimeError('cannot zero enabled motor')
-            state.update(q=j['zero_joint'], dq=0, tau=0)
+            state.update(q=0., dq=0, tau=0)
         self._reply(j)
 
     def refresh(self, j):
