@@ -31,25 +31,25 @@ class ObservationTests(unittest.TestCase):
             self.ctl.step()
             self.clock.now += .001
 
-    def test_no_zero_is_read_only_and_rejects_motion_even_when_degraded(self):
+    def test_observe_zeros_and_rejects_motion_even_when_degraded(self):
         with patch.object(self.bus, 'register', wraps=self.bus.register) as register:
             self.ctl.observe()
         self.cycle(20)
         self.assertEqual(self.ctl.state, 'OBSERVING')
         self.assertTrue(all(call.args[1] == READ for call in register.call_args_list))
-        self.assertEqual(self.bus.special_history, [])
+        self.assertFalse(any(code == ENABLE for _, code in self.bus.special_history))
         for state in ('OBSERVING','DEGRADED','READY'):
             self.ctl.state = state
             with self.assertRaises(SafetyError): self.ctl.submit({})
-            with self.assertRaises(SafetyError): self.ctl.arm(True, True)
+            with self.assertRaises(SafetyError): self.ctl.arm()
         self.ctl.stop()
-        self.assertIsNone(self.ctl.stop_confirmed)
-        self.assertEqual(self.bus.special_history, [])
+        self.assertTrue(self.ctl.stop_confirmed)
+        self.assertFalse(any(code == ENABLE for _, code in self.bus.special_history))
 
     def test_zero_shared_lifecycle_never_enables_or_changes_mode(self):
         with patch.object(self.bus, 'register', wraps=self.bus.register) as register, \
              patch.object(self.bus, 'mit') as mit:
-            self.ctl.observe(set_zero=True, workspace_ready=True, zero_pose=True)
+            self.ctl.observe()
             self.bus.state['J6']['q'] = .25
             self.cycle(20)
             self.assertEqual(self.bus.feedback['J6']['q'], .25)
@@ -60,16 +60,14 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual([n for n, code in self.bus.special_history if code == ZERO],self.names)
         self.assertFalse(any(code == ENABLE for _, code in self.bus.special_history))
 
-    def test_confirmation_and_failed_zero(self):
-        with self.assertRaises(SafetyError): self.ctl.observe(set_zero=True)
-        self.assertEqual(self.bus.sent, 0)
+    def test_failed_zero(self):
         self.bus.state['J3']['q'] = .5
         original = self.bus.special
         def ignore_zero(j, code):
             if j['name'] != 'J3' or code != ZERO: original(j, code)
         with patch.object(self.bus, 'special', side_effect=ignore_zero):
             with self.assertRaises(SafetyError):
-                self.ctl.observe(True, True, True)
+                self.ctl.observe()
         self.assertEqual(self.ctl.state,'FAULT')
         self.assertTrue(self.ctl.stop_confirmed)
 
@@ -90,6 +88,56 @@ class ObservationTests(unittest.TestCase):
         self.bus.drop.clear()
         self.ctl.reset_fault()
         self.assertEqual(self.ctl.state,'IDLE')
+
+    def test_pending_fresh_feedback_is_read_before_timeout_check(self):
+        self.ctl.observe()
+        self.cycle(2)
+        # 模拟调度停顿：缓存过期，但队列已有新反馈，不能先对缓存报超时。
+        self.clock.now += .051
+        for j in self.config['joints']:
+            self.bus.refresh(j)
+        self.ctl.step()
+        self.assertEqual(self.ctl.state, 'OBSERVING')
+
+    def test_queued_old_feedback_does_not_extend_validity(self):
+        self.ctl.observe()
+        self.cycle(2)
+        stamp = self.clock.now
+        self.clock.now += .051
+        original = self.bus.poll
+        def stale_poll(timeout=0):
+            result = original(timeout)
+            for f in self.bus.feedback.values():
+                f['timestamp'] = stamp
+            return result
+        for j in self.config['joints']:
+            self.bus.refresh(j)
+        with patch.object(self.bus, 'poll', side_effect=stale_poll):
+            self.ctl.step()
+        self.assertEqual(self.ctl.state, 'FAULT')
+        self.assertIn('feedback timeout', self.ctl.reason)
+
+    def test_transient_queue_full_retries_without_counting_failed_send(self):
+        self.ctl.observe()
+        self.cycle(2)
+        before = self.ctl.metrics['J1'].tx
+        self.bus.send_error = True
+        self.cycle(1)
+        self.assertEqual(self.ctl.state, 'DEGRADED')
+        self.assertEqual(self.ctl.metrics['J1'].tx, before)
+        self.assertEqual(self.ctl.metrics['J1'].tx_queue_full, 1)
+        self.bus.send_error = False
+        self.cycle(5)
+        self.assertEqual(self.ctl.metrics['J1'].tx, before)
+        self.cycle(20)
+        self.assertEqual(self.ctl.state, 'OBSERVING')
+        self.assertGreater(self.ctl.metrics['J1'].tx, before)
+
+    def test_non_transient_send_error_still_faults(self):
+        self.ctl.observe()
+        with patch.object(self.bus, 'refresh', side_effect=OSError(100, 'network down')):
+            self.ctl.step()
+        self.assertEqual(self.ctl.state, 'FAULT')
 
     def test_shared_absolute_schedule_skips_without_catchup(self):
         self.ctl.observe()
@@ -119,7 +167,7 @@ class ObservationProcessTests(unittest.TestCase):
                     time.sleep(.01)
                 with ArmClient(path) as client:
                     self.assertTrue(client.get_state()['observation_only'])
-                    with self.assertRaises(RuntimeError): client.arm(workspace_ready=True,zero_pose=True)
+                    with self.assertRaises(RuntimeError): client.arm()
                     client.observe()
                     with self.assertRaises(RuntimeError): client.submit({})
                     time.sleep(.03)
@@ -137,7 +185,7 @@ class ObservationProcessTests(unittest.TestCase):
                 while not Path(path).exists():
                     self.assertLess(time.monotonic(),deadline);time.sleep(.01)
                 result=subprocess.run([sys.executable,str(core.ROOT/'examples/sim_algorithm.py'),
-                    '--observe','--set-zero','--zero-pose-confirmed','--duration','.1',
+                    '--observe','--duration','.1',
                     '--print-rate','20','--socket',path],env=env,capture_output=True,text=True,timeout=10)
                 self.assertEqual(result.returncode,0,result.stdout+result.stderr)
                 self.assertIn('OBSERVING:',result.stdout)

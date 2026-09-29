@@ -1,6 +1,7 @@
 """Transport-independent lifecycle and single-owner scheduled control loop."""
 from dataclasses import dataclass, field
 import math
+import errno
 import time
 from . import protocol as p
 from .config import readiness, finite
@@ -15,6 +16,7 @@ class Metrics:
     # 连续发送但尚未观测到新反馈的次数；收到反馈即清零。
     unobserved: int = 0
     backpressure: int = 0
+    tx_queue_full: int = 0
     recovery_tx: int = 0
     max_tx_gap: float = 0.
     max_rx_gap: float = 0.
@@ -62,6 +64,7 @@ class Metrics:
             count_gap=self.tx - self.rx,
             backpressure=self.backpressure,
             recovery_tx=self.recovery_tx,
+            tx_queue_full=self.tx_queue_full,
             max_tx_gap_ms=self.max_tx_gap * 1000,
             max_rx_gap_ms=self.max_rx_gap * 1000,
             lateness_p95_ms=self.percentile(.95) * 1000,
@@ -87,6 +90,8 @@ class Controller:
         self.started = self.finished = None
         self.next_tick = 0.
         self.skipped = 0
+        self.tx_retry_after = 0.
+        self.tx_congested_since = None
         self.events = []
         self.mode_verified = {}
         self.protocol_ranges = {}
@@ -233,26 +238,23 @@ class Controller:
             self.fresh(0, zero=True)
             self.pause(.05)
 
-    def observe(self, set_zero=False, workspace_ready=False, zero_pose=False):
-        # 观察服务不能接收运动目标；可选归零复用正式 arm 的失能/静止/验证步骤。
+    def observe(self):
+        # 观察服务不能接收运动目标；每次归零复用正式 arm 的失能/静止/验证步骤。
         if not self.observation_only or self.state != 'IDLE':
             raise SafetyError('observe requires an idle --observe-only service')
-        if type(set_zero) is not bool:
-            raise SafetyError('set_zero must be boolean')
-        if set_zero and (workspace_ready is not True or zero_pose is not True):
-            raise SafetyError('zeroing requires workspace and fixed zero-pose confirmations')
         self.reason, self.stop_confirmed = None, None
         self.command = self.previous_command = None
         self.metrics = {j['name']: Metrics() for j in self.config['joints']}
         self.started = self.finished = None
         self.skipped = 0
+        self.tx_retry_after = 0.
+        self.tx_congested_since = None
         self.protocol_ranges = {}
-        self.workspace_confirmed = set_zero
+        self.workspace_confirmed = True
         self.transition('ARMING')
         try:
             self._read_ranges()
-            if set_zero:
-                self._zero_disabled()
+            self._zero_disabled()
             # 校准末尾有静止等待；运行阶段重新取样，不能把校准反馈当新样本。
             self.backend.feedback.clear()
             self.seen = dict(self.backend.rx_seq)
@@ -275,19 +277,21 @@ class Controller:
             if f['status'] not in (0, 1):
                 raise SafetyError(f"{j['name']}: drive status {f['status']}")
 
-    def arm(self, workspace_ready=False, zero_pose=False):
+    def arm(self):
         if self.observation_only:
             raise SafetyError('observation-only service rejects arm; use observe')
         if self.state != 'IDLE':
             raise SafetyError('arm requires IDLE; faults require explicit reset')
         errors = readiness(self.config, self.hardware)
-        if errors or workspace_ready is not True or zero_pose is not True:
-            raise SafetyError('; '.join(errors) or 'workspace and fixed zero-pose confirmations required')
+        if errors:
+            raise SafetyError('; '.join(errors))
         self.reason, self.stop_confirmed = None, None
         self.command = self.previous_command = None
         self.metrics = {j['name']: Metrics() for j in self.config['joints']}
         self.started = self.finished = None
         self.skipped = 0
+        self.tx_retry_after = 0.
+        self.tx_congested_since = None
         self.workspace_confirmed = True
         self.protocol_ranges = {}  # 每次 arm 都重新读取，不把上一次量程当本次确认。
         self.transition('ARMING')
@@ -345,6 +349,14 @@ class Controller:
             self.stop(str(exc), fault=True)
             raise
 
+    def receive_pending(self, seconds=.0003, limit=32):
+        # 有界读取已到达的帧；预算按接收任务计时，不受已错过的发送截止时间压缩。
+        end = self.clock() + seconds
+        for index in range(limit):
+            self.interrupt()
+            if (index and self.clock() >= end) or not self.poll(0):
+                break
+
     def step(self):
         if self.state not in self.ACTIVE:
             # 故障保持锁存；低频查询只更新诊断信息，不自动恢复使能。
@@ -362,6 +374,16 @@ class Controller:
             return
         try:
             self.interrupt()
+            # 先处理已到达的反馈，再判断超时；只用帧的原始时间戳刷新状态。
+            # 接近反馈期限时暂缓发送，最多用 2 ms/128 帧追赶接收队列。
+            now = self.clock()
+            near_timeout = any(
+                now - self.backend.feedback.get(j['name'], {}).get('timestamp', self.started or now)
+                >= self.config['feedback_timeout'] / 2
+                for j in self.config['joints']
+            )
+            self.receive_pending(.002 if near_timeout else .0003,
+                                 128 if near_timeout else 32)
             now = self.clock()
             if self.observation_only:
                 self._check_observation(now)
@@ -370,6 +392,9 @@ class Controller:
                     raise SafetyError('algorithm command expired')
                 check_feedback(self.config, self.backend.feedback, now)
                 check_effort(self.config, self.command, self.backend.feedback)
+            if (self.tx_congested_since is not None
+                    and now - self.tx_congested_since >= self.config['feedback_timeout']):
+                raise SafetyError('transmit congestion timeout')
             # 按绝对时刻调度：跳过错过的周期，不集中补发历史目标。
             if now >= self.next_tick:
                 period = 1/self.config['rate_hz']
@@ -383,7 +408,7 @@ class Controller:
                     if m.unobserved >= self.config['max_unobserved']
                 ]
                 retry = min(.02, self.config['feedback_timeout']/4)
-                if blocked and any(now-m.last_tx < retry for m in blocked):
+                if now < self.tx_retry_after or (blocked and any(now-m.last_tx < retry for m in blocked)):
                     for m in self.metrics.values():
                         m.backpressure += 1
                     if self.state != 'DEGRADED':
@@ -391,19 +416,32 @@ class Controller:
                 else:
                     for j in self.config['joints']:
                         self.interrupt()
-                        if self.observation_only:
-                            self.backend.refresh(j)
-                        else:
-                            if self.clock()-self.command['timestamp'] >= self.config['command_timeout']:
-                                raise SafetyError('command expired during send group')
-                            self.backend.mit(j, self.command['joints'][j['name']])
-                        self.metrics[j['name']].sent(self.clock(), deadline, bool(blocked))
-            # 接收最多 32 帧，并受时间预算约束；即使迟到也至少尝试接收一次。
-            budget = min(self.next_tick, self.clock()+.0003)
-            for index in range(32):
-                if (index and self.clock() >= budget) or not self.poll(0):
-                    break
-            if self.state == 'DEGRADED' and all(
+                        try:
+                            if self.observation_only:
+                                self.backend.refresh(j)
+                            else:
+                                if self.clock()-self.command['timestamp'] >= self.config['command_timeout']:
+                                    raise SafetyError('command expired during send group')
+                                self.backend.mit(j, self.command['joints'][j['name']])
+                        except OSError as exc:
+                            if exc.errno not in (errno.ENOBUFS, errno.EAGAIN, errno.EWOULDBLOCK):
+                                raise
+                            # 队列满不算发送成功；本轮余下目标丢弃，稍后只发送最新目标。
+                            self.metrics[j['name']].tx_queue_full += 1
+                            self.metrics[j['name']].backpressure += 1
+                            if self.tx_congested_since is None:
+                                self.tx_congested_since = self.clock()
+                            self.tx_retry_after = self.clock() + retry
+                            self.transition('DEGRADED', 'transmit queue backpressure')
+                            break
+                        self.metrics[j['name']].sent(self.clock(), deadline,
+                                                     bool(blocked) or self.tx_congested_since is not None)
+                    else:
+                        # 全组都提交成功才结束发送拥堵状态；这不代表逐帧执行确认。
+                        self.tx_congested_since = None
+                        self.tx_retry_after = 0.
+            self.receive_pending()
+            if self.state == 'DEGRADED' and self.tx_congested_since is None and all(
                 m.unobserved < self.config['max_unobserved']
                 for m in self.metrics.values()
             ):

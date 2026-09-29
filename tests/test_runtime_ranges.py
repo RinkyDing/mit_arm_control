@@ -18,7 +18,7 @@ class RuntimeRangeTests(unittest.TestCase):
         self.bus.registers['J1'].update({21: 8., 22: 30., 23: 6.})
         self.bus.registers['J4'].update({21: 10., 22: 40., 23: 8.})
         with patch.object(self.bus, 'register', wraps=self.bus.register) as register:
-            self.ctl.arm(True, True)
+            self.ctl.arm()
         self.assertEqual(self.c, original)
         self.assertEqual(MODELS['4310_48V'], (12.5, 50., 10.))
         self.assertEqual(self.bus.protocol_ranges['J1'], (8., 30., 6.))
@@ -35,7 +35,7 @@ class RuntimeRangeTests(unittest.TestCase):
                 self.setUp()
                 self.bus.registers['J3'][21] = value
                 with self.assertRaises(SafetyError):
-                    self.ctl.arm(True, True)
+                    self.ctl.arm()
                 self.assertEqual(self.ctl.state, 'FAULT')
                 self.assertTrue(self.ctl.stop_confirmed)
                 self.assertEqual(self.ctl.protocol_ranges, {})
@@ -49,7 +49,7 @@ class RuntimeRangeTests(unittest.TestCase):
                 original = copy.deepcopy(self.c)
                 self.bus.registers['J3'][rid] = value
                 with self.assertRaisesRegex(SafetyError, 'configured limits exceed'):
-                    self.ctl.arm(True, True)
+                    self.ctl.arm()
                 self.assertEqual(self.c, original)
                 self.assertEqual(self.bus.protocol_ranges, {})
                 self.assertTrue(self.ctl.stop_confirmed)
@@ -58,17 +58,17 @@ class RuntimeRangeTests(unittest.TestCase):
         self.bus.registers['J1'][22] = 30.
         self.bus.drop.add('J3')
         with self.assertRaises(TimeoutError):
-            self.ctl.arm(True, True)
+            self.ctl.arm()
         self.assertEqual(self.bus.protocol_ranges, {})
         self.assertEqual(self.ctl.protocol_ranges, {})
         self.assertFalse(self.ctl.stop_confirmed)
         self.assertFalse(any(code == ENABLE for _, code in self.bus.special_history))
 
     def test_rearm_rereads_ranges(self):
-        self.ctl.arm(True, True)
+        self.ctl.arm()
         self.ctl.stop()
         self.bus.registers['J1'][22] = 35.
-        self.ctl.arm(True, True)
+        self.ctl.arm()
         self.assertEqual(self.bus.protocol_ranges['J1'][1], 35.)
         self.assertEqual(self.ctl.snapshot()['protocol_ranges']['J1']['vmax'], 35.)
 

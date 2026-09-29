@@ -1,109 +1,156 @@
-# 算法接口与状态机
+# 算法组接入指南
 
-## 控制边界
+## 1. 代码放在哪里
 
-算法只使用 `ArmClient`，不能持有或操作 CAN socket。控制服务独立存活，单一控制客户端拥有命令权限，可同时连接只读 observer。Unix socket 权限 0600，供同一 Linux 用户的可信本机程序使用，不是网络 API，也不是对同用户恶意进程的安全隔离。
+项目：`/home/rinky/damiao_ws/mit_arm_control`。Python 3.10+、Linux，无需 ROS。
 
-SDK 实例不是线程安全的；由算法一个线程依次调用。协议版本为 1，最大消息 32768 字节，使用 SOCK_SEQPACKET 保持消息边界。算法发送整组七轴命令，新目标覆盖旧目标，不补发历史轨迹。`submit` 返回排入最新目标槽的确认，不是电机逐帧执行确认。驱动没有序号，不能证明每条命令与每条反馈严格配对。
+- 算法程序建议放在 `algorithms/`，例如 `algorithms/main.py`，也可使用独立仓库。
+- 算法只导入 `from mit_arm_control import ArmClient`，无需修改 `src/mit_arm_control/`。
+- `examples/sim_algorithm.py` 是可运行的模拟运动/实机观察示例。
+- 在项目根目录使用 `PYTHONPATH=src python3 algorithms/main.py` 运行。独立仓库可先在算法的虚拟环境中执行 `python3 -m pip install -e /home/rinky/damiao_ws/mit_arm_control`。
 
-## 公共接口
+## 2. 启动方式：两个进程
 
-```python
-from mit_arm_control import ArmClient
+先启动控制服务，再启动算法程序。两者使用同一台机器、同一 Linux 用户。服务启动和 SDK 连接不会使能或归零。
 
-client = ArmClient('/tmp/mit-arm-control.sock').connect()
-state = client.get_state()
-# 以下确认必须来自现场操作者，不能由算法在实机上无条件写 True。
-client.arm(workspace_ready=True, zero_pose=True)
-# arm 返回 READY，此时电机仍失能，等待初始有效目标。
-client.submit(all_seven_joint_targets)
-state = client.get_state()
-# 算法持续更新目标；如要回桌，由算法完成轨迹后再调用 stop。
-result = client.stop()
-client.close()
+### 模拟联调
+
+终端一，在项目根目录执行：
+
+```bash
+PYTHONPATH=src python3 -m mit_arm_control serve --config configs/simulation.json
 ```
 
-| 方法 | 语义 |
+终端二：
+
+```bash
+PYTHONPATH=src python3 examples/sim_algorithm.py --duration 30
+# 接入自己的算法后改为：
+PYTHONPATH=src python3 algorithms/main.py
+```
+
+模拟后端用于验证接口与流程，不代表真实机械臂动力学。
+
+### 实机运动
+
+由设备负责人提供已完成标定和限制设置的配置，例如 `configs/arm.hardware.json`；该文件名是约定示例，仓库模板不能直接作为已验收配置。
+
+```bash
+PYTHONPATH=src python3 -m mit_arm_control serve \
+  --config configs/arm.hardware.json --hardware
+```
+
+另一终端运行算法程序。`sim_algorithm.py` 的运动示例只允许模拟后端，不用于实机运动。
+
+**每次调用 `arm()` 或 `observe()` 前，把机械臂摆回约定固定启动姿态并保持静止；调用后会自动执行失能、设零及验证。** 不再传入确认参数，也没有跳过归零的开关。归零不会自动把机械臂运动到固定姿态。
+
+### 六轴手动拖动观察
+
+```bash
+# 终端一：先停掉其他控制服务
+PYTHONPATH=src python3 -m mit_arm_control serve \
+  --config configs/arm.hardware.template.json --hardware --observe-only \
+  --joints J1 J2 J3 J4 J5 J6 --query-rate 400
+
+# 终端二：先摆好固定启动姿态
+PYTHONPATH=src python3 examples/sim_algorithm.py --observe --duration 30 --print-rate 1
+```
+
+`observe()` 返回后才开始手动拖动。观察模式始终不使能，不接收 `submit()`。观察模式的数据为电机角度坐标，不能直接当作尚未完成方向标定的机械臂模型坐标。
+
+## 3. 接口速查
+
+| 接口 | 用法及结果 |
 | --- | --- |
-| connect() | 连接并获得控制权，不触发电机动作；第二个控制客户端被拒绝 |
-| get_state() | 最新反馈快照、反馈年龄、状态、故障、配置错误和统计；未观测轴不会伪造为零 |
-| arm(workspace_ready, zero_pose) | 在完整配置及双重确认后读取并采用实际协议量程、校验机械限制兼容性、失能静止、设零验证、逐轴模式确认；返回 READY |
-| submit(joints, timestamp=None, sequence=None) | 完整七轴 MIT 目标；SDK 默认生成主机 monotonic 时间和递增序号 |
-| stop() | 请求全体失能并等待本次请求结果；未确认抛异常；未曾 arm 的会话不写电机、不声称失能已确认 |
-| reset_fault() | 要求 FAULT；曾启动时重新取得失能反馈，返回 IDLE，不自动恢复运动 |
-| close() | 关闭连接；控制客户端掉线时服务请求故障停止；应先显式 stop 获取结果 |
+| `ArmClient().connect()` | 连接服务；也可使用 `with ArmClient() as client:` 自动连接/关闭 |
+| `client.get_state()` | 返回最新状态字典，不等待下一份反馈，不触发归零或运动 |
+| `client.arm(timeout=15.)` | 每次归零、检查配置及模式；返回 `READY`，此时仍失能，首条有效静止目标才触发使能 |
+| `client.observe(timeout=15.)` | 仅用于观察服务；每次归零，返回 `OBSERVING`，电机保持失能 |
+| `client.submit(joints)` | 提交完整一组目标；返回服务接收确认，执行状态通过 `get_state()` 检查 |
+| `client.stop(timeout=4.)` | 停止并等待失能确认，返回状态；未确认会抛异常 |
+| `client.reset_fault(timeout=4.)` | 故障处理后显式复位，返回 `IDLE`；不会自动归零或恢复运动 |
+| `client.close()` | 关闭连接；不能代替需要取得停止结果的 `stop()` |
 
-只读观察者：`ArmClient(path, role='observer')`，仅支持读取状态和关闭连接。
+一个客户端实例由一个线程顺序调用。只允许一个控制客户端。其他程序可用 `ArmClient(role='observer')` 连接，只读取状态；此角色不能调用 `observe()` 或发起控制操作。
 
-## 命令与单位
+如需不同服务地址，服务使用 `--socket /tmp/my-arm.sock`，客户端使用 `ArmClient('/tmp/my-arm.sock')`。
 
-`joints` 必须恰好包含 `J1`..`J6` 和 `gripper`：
+## 4. 提交目标
+
+运动接口必须完整包含 `J1`、`J2`、`J3`、`J4`、`J5`、`J6`、`gripper`，每轴有以下五个字段：
+
+| 字段 | 含义 | 单位 |
+| --- | --- | --- |
+| `q_des` | 期望关节位置 | rad |
+| `dq_des` | 期望关节速度 | rad/s |
+| `kp` | 位置误差增益，非负 | N·m/rad |
+| `kd` | 速度误差增益，非负 | N·m/(rad/s) |
+| `tau_ff` | 前馈力矩，如算法计算的重力补偿 | N·m |
+
+正式运动使用配置约定的关节输出侧坐标；算法不再自行重复方向/零点转换。夹爪仍用驱动轴角度，不提供毫米开口或夹持力换算。配置范围和变化率限制由设备负责人提供，越界会拒绝并可能触发停止，不会静默截断。
+
+首条目标：位置接近归零后反馈（误差不超过 0.02 rad），速度和前馈力矩绝对值不超过 0.1，并满足配置限制。之后逐渐过渡到算法目标。
+
+算法建议先按约 200 Hz 更新目标。默认目标有效期 50 ms；算法计算或休眠不能长期阻断更新。服务保持最新有效目标，不自动插值，旧目标不会排队依次执行。
+
+高级调用 `submit(joints, timestamp=..., sequence=...)` 可显式指定同机 `time.monotonic()` 时间戳和严格递增序号；一般省略，由 SDK 自动生成。不要使用 `time.time()`。
+
+## 5. 算法程序结构
+
+下面是接入结构，`your_algorithm` 由算法组实现，增益需使用双方确认的配置。先在模拟环境验证。
 
 ```python
-{
-    'J1': {'q_des': 0.0, 'dq_des': 0.0, 'kp': 2.0, 'kd': 0.1, 'tau_ff': 0.0},
-    # J2 ... J6, gripper 同样的五个字段，不能省略。
-}
+import time
+from mit_arm_control import ArmClient
+from your_algorithm import initial_targets, compute_targets
+
+with ArmClient() as client:
+    try:
+        state = client.arm()  # 自动归零；调用前已摆好约定姿态
+        # 返回完整七轴静止目标，位置使用 state['feedback'][name]['q']。
+        client.submit(initial_targets(state))
+        while True:
+            state = client.get_state()
+            if state['state'] == 'FAULT':
+                raise RuntimeError(state['reason'])
+            targets = compute_targets(state)  # 完整七轴、五字段字典
+            client.submit(targets)
+            time.sleep(0.005)  # 示例节拍；计算耗时也计入更新周期
+    except KeyboardInterrupt:
+        pass
+    finally:
+        result = client.stop()
+        print('失能确认：', result['stop_confirmed'])
 ```
 
-上述数值只是模拟示例，不是实机推荐增益。
+`submit()` 成功不表示目标已经执行；后续仍须检查状态。算法异常、连接断开或目标过期都会触发服务的停止处理。`stop()` 是失能，不是回零、回桌或制动轨迹；需要回桌时由算法先完成轨迹再调用。
 
-- q_des：关节输出侧 rad；dq_des：rad/s；tau_ff：N·m。
-- kp：N·m/rad；kd：N·m/(rad/s)。kp、kd 必须非负。
-- 夹爪首版按驱动轴角度表示，不自动转换为毫米或夹持力。
-- 输出侧必须由实际安装与驱动固件量纲核对；本版没有额外减速比换算。存在外部传动时先扩展并验证适配层。
-- `q_joint = direction * q_motor + zero_joint`，速度和力矩使用同一个 ±1 方向变换。
-- 序号在服务当前命令历史内严格递增；时间戳来自同机 `time.monotonic()`，容许不超过 1 ms 的未来偏差，不支持远程时钟。
-- 默认命令 TTL 50 ms，算法建议先按 200 Hz 模拟联调；首版不插值，控制服务保持最新未过期目标。
-- 首条目标必须与归零后实测位置相差不超过 0.02 rad，速度与前馈力矩绝对值不超过 0.1，并满足所有配置限制。先提交静止初始目标，再逐步变化。
+## 6. 读取状态与处理故障
 
-参数变化率按连续命令时间戳检查，长时间中断不能获得无限大的变化额度。缺轴、额外字段、乱序、过期、NaN/Inf、限幅或变化率违规均拒绝；运行中违规会锁存故障并全体停止，不静默裁剪。
-
-`tau_est = kp*(q_des-q) + kd*(dq_des-dq) + tau_ff` 在每轮发送前受配置约束；这是基于最新反馈的主机估计，不是电机瞬时输出的硬件限幅。
-
-## 状态机
-
-```text
-IDLE → ARMING → READY → RUNNING ⇄ DEGRADED
-                    初始有效目标       ↓
-任一启动/运行失败 ───────────────→ STOPPING → FAULT
-正常 stop ─────────────────────→ STOPPING → IDLE
-FAULT → 显式 reset_fault + 失能确认 → IDLE
+```python
+state = client.get_state()
+mode = state['state']
+f = state['feedback'].get('J1')
+if f is not None:
+    print(f['q'], f['dq'], f['tau'], f['age_ms'])
 ```
-
-没有自动恢复使能。READY 可以等待算法，电机保持失能；50 ms 命令超时从有效运动命令控制阶段开始。未启用过的会话掉线不操作电机。进入 FAULT 后恢复连接仍需 reset_fault、重新确认缓冲工作区域与固定零姿态，再 arm。
-
-服务 SIGINT/SIGTERM 会先停止电机再关闭日志。SIGKILL、内核崩溃、断电无法执行 Python 清理，此时本版不能保证失能命令送达；不配置设备侧超时保护是当前实验边界。
-
-## 反馈与统计
-
-反馈包括 q、dq、估计 tau、MOS/转子温度、状态码、接收 monotonic 时间和年龄。SocketCAN 使用 Linux 接收时间戳换算样本年龄，避免旧队列数据被误认为刚收到；这不是电机内部采样时间。参数回复不更新反馈年龄。系统实时时钟跳变可能触发保守的超时，联调期间不要手动修改系统时钟。
-
-控制循环逐轮更新轻量反馈快照；完整统计约每 20 ms 更新，日志每秒输出。读取反馈不是等待新样本，算法应检查时间戳与 age_ms。七轴 CAN 帧依次到达，不是同步采样。
 
 | 字段 | 含义 |
 | --- | --- |
-| tx/rx、tx_hz/rx_hz | 运动阶段成功提交发送/处理有效反馈的计数及平均频率，不含启动和失能事务 |
-| skipped | 全组错过的调度时隙，不是总线丢包 |
-| unobserved_tx | 自最近反馈以来成功发出的命令数；收到反馈清零 |
-| backpressure | 因任一轴达到阈值，全组跳过的周期数 |
-| count_gap | 累计 tx−rx，仅诊断，不参与限速 |
-| recovery_tx | 降级期间低频发送最新、仍未过期目标的次数 |
-| max_tx_gap_ms/max_rx_gap_ms | 运动阶段相邻发送/接收样本的最大间隔，不是往返延迟 |
-| lateness_p95_ms/p99_ms/max_ms | 该轴发送提交结束相对当前计划周期的延迟；P95/P99 使用 10 µs 分桶的上界估计，20 ms 以上溢出用最大值报告 |
-| stop_confirmed | true：取得新失能反馈；false：停止未确认；null：未执行需确认的停止 |
-| log_dropped/log_failures | 日志队列满而丢弃的周期统计数/日志消费者输出失败数 |
+| `state` | `IDLE` 待启动；`ARMING` 初始化；`READY` 等初始目标；`RUNNING` 运行；`OBSERVING` 观察；`DEGRADED` 降级；`STOPPING` 停止中；`FAULT` 故障锁存 |
+| `reason` | 最近状态原因；当前是否故障以 `state` 判断 |
+| `feedback[name].q / dq / tau` | 位置、速度、反馈估计力矩；力矩不是外力传感器读数 |
+| `feedback[name].timestamp / age_ms` | 样本时间与年龄；连续读取可能得到同一份样本，各轴不是严格同步采样 |
+| `feedback[name].mos_temperature / rotor_temperature` | 驱动及电机温度，℃ |
+| `feedback[name].status` | 驱动状态，0 为失能、1 为使能；其他状态交由服务处理 |
+| `stop_confirmed` | `True` 已确认失能；`False` 未确认；`None` 尚未执行需确认的停止 |
+| `configuration_errors` | 尚未满足的运动配置条件 |
 
-量化位宽：位置16位、速度/Kp/Kd/前馈力矩各12位；CAN FD+BRS 仍携带8字节 MIT 数据。1 kHz 是目标，并非硬实时保证。绝对时间调度不集中补发，迟到量也不包括 socket 写入之后的 USB/总线排队延迟。
+缺少某轴反馈时不能自行补零。故障后停止算法更新，记录 `reason`；处理原因后调用 `reset_fault()`，重新摆好启动姿态，再 `arm()`。不要编写自动复位、自动恢复运动的无限重试循环。
 
-## 运行时协议量程
+## 7. 旧调用迁移
 
-arm 自动读取每轴寄存器 21/22/23，不写回这些寄存器，不改 JSON 或机械限制。全部有效且兼容限制后用于发送编码和反馈解码。`get_state()["protocol_ranges"]["J1"]` 返回例如 `{"pmax": 12.5, "vmax": 50.0, "tmax": 10.0}`；尚未完成本轮量程检查时该映射为空。无需算法提交量程。每次 arm 重读，读取失败不自动使用默认值继续启动。
-
-## 观察模式
-
-服务用 `serve --observe-only --joints J1 J2 J3 J4 J5 J6 --query-rate 1000` 启动，实机另加 --hardware。复用原 Controller、IPC、SocketCAN、统计和日志，服务端禁止 arm/submit。
-
-SDK 新增 `observe(set_zero=False, workspace_ready=False, zero_pose=False, timeout=15.)`，等待 OBSERVING。set_zero=True 需双确认并复用已有失能/静止/归零验证；不写 MIT 模式、不使能。否则只读取实际量程并启动查询。后续只需 get_state，不提交运动目标；反馈超时仍会故障锁存。状态快照增加 observation_only、target_rate_hz。观察模式采用原始电机坐标，方向/零位偏移为 +1/0。
-
-observe 使用控制客户端权限；role='observer' 是只能查看快照的旁观连接，不能发起操作。stop/断联复用原有流程，归零会话需要失能确认，纯只读会话不改变已有使能状态。重新开始需明确处理故障，不自动恢复。
+- `arm(workspace_ready=True, zero_pose=True)` → `arm()`。
+- `observe(set_zero=True, workspace_ready=True, zero_pose=True)` → `observe()`。
+- 旧示例选项 `--set-zero --zero-pose-confirmed` 已删除。
+- `connect()`、`get_state()` 不归零；每次主动启动 `arm()` 或 `observe()` 才归零。

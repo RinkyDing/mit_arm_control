@@ -65,19 +65,14 @@ class ArmClient:
             time.sleep(.01)
         raise TimeoutError(f'waiting for {target}; inspect service state')
 
-    def arm(self, *, workspace_ready=None, zero_pose, timeout=15., supported=None):
-        # 兼容旧 supported 参数，新代码使用 workspace_ready。
-        if workspace_ready is None:
-            workspace_ready = supported
-        ack = self._rpc('arm', workspace_ready=workspace_ready,
-                        supported=workspace_ready, zero_pose=zero_pose)
-        # arm 仅等待 READY；首条有效静止目标提交后才执行使能。
+    def arm(self, *, timeout=15.):
+        # 每次启动均归零；返回 READY 后，首条有效静止目标才触发使能。
+        ack = self._rpc('arm')
         return self._wait('READY', timeout, ack['ticket'])
 
-    def observe(self, *, set_zero=False, workspace_ready=False, zero_pose=False, timeout=15.):
-        # 只在观察服务中启动查询；可选先归零，不提交 MIT 目标、不使能。
-        ack = self._rpc('observe', set_zero=set_zero, workspace_ready=workspace_ready,
-                        zero_pose=zero_pose)
+    def observe(self, *, timeout=15.):
+        # 每次观察均先失能、校准零点并验证；观察期间不使能。
+        ack = self._rpc('observe')
         return self._wait('OBSERVING', timeout, ack['ticket'])
 
     def submit(self, joints, *, timestamp=None, sequence=None):

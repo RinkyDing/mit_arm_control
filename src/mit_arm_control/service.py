@@ -108,14 +108,9 @@ def run(config, socket_path, hardware=False, result_path=None, *,
                     try:
                         mailbox.take_command()
                         if op == 'arm':
-                            controller.arm(
-                                args.get('workspace_ready', args.get('supported')),
-                                args.get('zero_pose'),
-                            )
+                            controller.arm()
                         elif op == 'observe':
-                            controller.observe(args.get('set_zero', False),
-                                               args.get('workspace_ready', False),
-                                               args.get('zero_pose', False))
+                            controller.observe()
                         else:
                             controller.reset_fault()
                     except Exception as exc:

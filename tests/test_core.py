@@ -38,7 +38,7 @@ class CoreTests(unittest.TestCase):
         return dict(seq=self.seq, timestamp=self.clock(), joints={n: dict(q_des=0.,dq_des=0.,kp=2.,kd=.1,tau_ff=0.) for n in NAMES})
 
     def start(self):
-        self.ctl.arm(True, True)
+        self.ctl.arm()
         self.assertEqual(self.ctl.state, 'READY')
         self.assertTrue(all(s['status'] == 0 for s in self.bus.state.values()))
         self.ctl.submit(self.cmd())
@@ -60,17 +60,14 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(readiness(cfg, True))
         self.assertTrue(readiness(self.c, True))
 
-    def test_workspace_confirmation_required(self):
-        with self.assertRaises(SafetyError): self.ctl.arm(False, True)
-        self.assertEqual(self.bus.sent, 0)
+    def test_arm_always_zeros(self):
+        self.ctl.arm()
+        self.assertEqual(sum(code == ZERO for _, code in self.bus.special_history), 7)
 
-    def test_watchdog_is_optional_and_zero_pose_still_required(self):
+    def test_watchdog_is_optional(self):
         self.c['hardware_commissioned'] = True
         self.c['hardware_watchdog_verified'] = False
         self.assertEqual(readiness(self.c, True), [])
-        with self.assertRaises(SafetyError):
-            self.ctl.arm(workspace_ready=True, zero_pose=False)
-        self.assertEqual(self.bus.sent, 0)
 
     def test_full_lifecycle_and_no_auto_resume(self):
         self.start()
@@ -86,7 +83,7 @@ class CoreTests(unittest.TestCase):
 
     def test_partial_initialization_failure_stops_every_motor(self):
         self.bus.registers['J3'][22] = float('nan')
-        with self.assertRaises(SafetyError): self.ctl.arm(True, True)
+        with self.assertRaises(SafetyError): self.ctl.arm()
         self.assertEqual(self.ctl.state, 'FAULT')
         self.assertTrue(self.ctl.stop_confirmed)
         self.assertEqual({n for n, code in self.bus.special_history if code == DISABLE}, set(NAMES))
@@ -118,7 +115,7 @@ class CoreTests(unittest.TestCase):
                 self.assertTrue(self.ctl.stop_confirmed)
 
     def test_initial_step_rejected_before_enable(self):
-        self.ctl.arm(True, True)
+        self.ctl.arm()
         cmd = self.cmd(); cmd['joints']['J1']['q_des'] = .3
         with self.assertRaises(SafetyError): self.ctl.submit(cmd)
         self.assertFalse(any(code == ENABLE for _, code in self.bus.special_history))
@@ -172,6 +169,8 @@ class CoreTests(unittest.TestCase):
         self.bus.send_error = True
         self.clock.now += .001
         self.ctl.step()
+        self.assertEqual(self.ctl.state, 'DEGRADED')
+        self.cycle(60)
         self.assertEqual(self.ctl.state, 'FAULT')
         self.assertFalse(self.ctl.stop_confirmed)
         self.assertIn('UNCONFIRMED', self.ctl.reason)

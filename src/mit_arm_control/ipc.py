@@ -182,6 +182,36 @@ class IPCServer:
             os.unlink(self.path)
 
 
+def format_telemetry(snapshot):
+    """终端每轴一行；完整结构化数据仍由 IPC 和 final-state.json 提供。"""
+    lines = [
+        f"\n[{snapshot.get('state', '?')}] elapsed={snapshot.get('elapsed', 0):.3f}s "
+        f"target={snapshot.get('target_rate_hz', 0):.0f}Hz/axis "
+        f"skipped={snapshot.get('skipped', 0)} "
+        f"stop_confirmed={snapshot.get('stop_confirmed')}"
+    ]
+    if snapshot.get('reason'):
+        lines.append('  reason: ' + str(snapshot['reason']).replace('\n', ' '))
+    for name, m in snapshot.get('metrics', {}).items():
+        f = snapshot.get('feedback', {}).get(name)
+        if f:
+            # 轻量快照中的反馈未必带 age_ms，按快照时刻和原始帧时间计算。
+            now = snapshot.get('feedback_snapshot_timestamp', snapshot.get('timestamp', 0))
+            age = max(0., now - f['timestamp']) * 1000
+            feedback = (f"q={f['q']:+.5f} dq={f['dq']:+.4f} "
+                        f"status={f['status']} age={age:.1f}ms")
+        else:
+            feedback = 'NO_FEEDBACK'
+        lines.append(
+            f"  {name:7s} TX={m['tx_hz']:7.1f} RX={m['rx_hz']:7.1f}Hz "
+            f"bp={m['backpressure']} queue_full={m.get('tx_queue_full', 0)} "
+            f"gapRX={m['max_rx_gap_ms']:.2f}ms "
+            f"late95/99/max={m['lateness_p95_ms']:.2f}/"
+            f"{m['lateness_p99_ms']:.2f}/{m['lateness_max_ms']:.2f}ms "
+            + feedback)
+    return '\n'.join(lines)
+
+
 class AsyncLogger:
     def __init__(self, sink=None):
         # 单独打开非阻塞输出，避免终端管道堵塞后，缓冲 stdout 锁拖住退出。
@@ -220,7 +250,7 @@ class AsyncLogger:
             except queue.Empty:
                 continue
             try:
-                self.sink(json.dumps(snapshot, ensure_ascii=False, allow_nan=False))
+                self.sink(format_telemetry(snapshot))
             except Exception:
                 self.failures += 1
 
