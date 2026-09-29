@@ -72,12 +72,13 @@ class Metrics:
 
 # 只有控制服务主循环调用此对象；IPC 线程不直接读写电机。
 class Controller:
-    ACTIVE = ('RUNNING', 'DEGRADED')
+    ACTIVE = ('RUNNING', 'DEGRADED', 'OBSERVING')
 
     def __init__(self, config, backend, hardware=False, clock=time.monotonic,
-                 cancelled=lambda: False, publish=lambda: None):
+                 cancelled=lambda: False, publish=lambda: None, observation_only=False):
         self.config, self.backend, self.hardware, self.clock = config, backend, hardware, clock
         self.cancelled, self.publish = cancelled, publish
+        self.observation_only = observation_only
         self.state, self.reason, self.stop_confirmed = 'IDLE', None, None
         self.command, self.previous_command = None, None
         self.last_seq = -1
@@ -195,7 +196,88 @@ class Controller:
         if pending:
             raise SafetyError(f"STOP UNCONFIRMED: {list(pending)}; last I/O error={last_error}")
 
+    def _read_ranges(self):
+        # 1. 逐轴读回实际协议量程；全部有效且能容纳机械限制后才统一生效。
+        # 只改变本次会话的编解码量程，不写量程寄存器、不覆盖 JSON 或机械限制。
+        pending_ranges = {}
+        for j in self.config['joints']:
+            values = []
+            for rid in (21, 22, 23):
+                actual = self.backend.register(j, p.READ, rid, interrupt=self.interrupt)
+                if not finite(actual) or actual <= 0:
+                    raise SafetyError(f"{j['name']}: invalid register {rid} range: {actual}")
+                values.append(actual)
+            pending_ranges[j['name']] = tuple(values)
+        if not self.observation_only:
+            errors = readiness(self.config, self.hardware, ranges=pending_ranges)
+            if errors:
+                raise SafetyError('; '.join(errors))
+        self.backend.protocol_ranges = dict(pending_ranges)
+        self.protocol_ranges = dict(pending_ranges)
+        # 旧反馈可能按默认/上次量程解码，清除后重新取得反馈再验证静止和零位。
+        self.backend.feedback.clear()
+
+    def _zero_disabled(self):
+        # 2. 全组失能，并连续验证静止后才能设置零点。
+        self.disable()
+        for _ in range(3):
+            self.fresh(0)
+            self.pause(.05)
+        # 3. 每轴只发送一次设零，再等待并多次验证反馈零位。
+        for j in self.config['joints']:
+            self.interrupt()
+            self.backend.special(j, p.ZERO)
+            self.pause(.02)
+        self.pause(.2)
+        for _ in range(3):
+            self.fresh(0, zero=True)
+            self.pause(.05)
+
+    def observe(self, set_zero=False, workspace_ready=False, zero_pose=False):
+        # 观察服务不能接收运动目标；可选归零复用正式 arm 的失能/静止/验证步骤。
+        if not self.observation_only or self.state != 'IDLE':
+            raise SafetyError('observe requires an idle --observe-only service')
+        if type(set_zero) is not bool:
+            raise SafetyError('set_zero must be boolean')
+        if set_zero and (workspace_ready is not True or zero_pose is not True):
+            raise SafetyError('zeroing requires workspace and fixed zero-pose confirmations')
+        self.reason, self.stop_confirmed = None, None
+        self.command = self.previous_command = None
+        self.metrics = {j['name']: Metrics() for j in self.config['joints']}
+        self.started = self.finished = None
+        self.skipped = 0
+        self.protocol_ranges = {}
+        self.workspace_confirmed = set_zero
+        self.transition('ARMING')
+        try:
+            self._read_ranges()
+            if set_zero:
+                self._zero_disabled()
+            # 校准末尾有静止等待；运行阶段重新取样，不能把校准反馈当新样本。
+            self.backend.feedback.clear()
+            self.seen = dict(self.backend.rx_seq)
+            self.started = self.next_tick = self.clock()
+            self.transition('OBSERVING')
+        except Exception as exc:
+            self.stop(str(exc), fault=True)
+            raise
+
+    def _check_observation(self, now):
+        # 观察不要求使能或配置运动限位；但仍检查反馈新鲜度及驱动故障。
+        for j in self.config['joints']:
+            f = self.backend.feedback.get(j['name'])
+            if not f:
+                if now - self.started < self.config['feedback_timeout']:
+                    continue
+                raise SafetyError(f"{j['name']}: feedback timeout")
+            if now - f['timestamp'] >= self.config['feedback_timeout']:
+                raise SafetyError(f"{j['name']}: feedback timeout")
+            if f['status'] not in (0, 1):
+                raise SafetyError(f"{j['name']}: drive status {f['status']}")
+
     def arm(self, workspace_ready=False, zero_pose=False):
+        if self.observation_only:
+            raise SafetyError('observation-only service rejects arm; use observe')
         if self.state != 'IDLE':
             raise SafetyError('arm requires IDLE; faults require explicit reset')
         errors = readiness(self.config, self.hardware)
@@ -210,38 +292,8 @@ class Controller:
         self.protocol_ranges = {}  # 每次 arm 都重新读取，不把上一次量程当本次确认。
         self.transition('ARMING')
         try:
-            # 1. 逐轴读回实际协议量程；全部有效且能容纳机械限制后才统一生效。
-            # 只改变本次会话的编解码量程，不写量程寄存器、不覆盖 JSON 或机械限制。
-            pending_ranges = {}
-            for j in self.config['joints']:
-                values = []
-                for rid in (21, 22, 23):
-                    actual = self.backend.register(j, p.READ, rid, interrupt=self.interrupt)
-                    if not finite(actual) or actual <= 0:
-                        raise SafetyError(f"{j['name']}: invalid register {rid} range: {actual}")
-                    values.append(actual)
-                pending_ranges[j['name']] = tuple(values)
-            errors = readiness(self.config, self.hardware, ranges=pending_ranges)
-            if errors:
-                raise SafetyError('; '.join(errors))
-            self.backend.protocol_ranges = dict(pending_ranges)
-            self.protocol_ranges = dict(pending_ranges)
-            # 旧反馈可能按默认/上次量程解码，清除后重新取得反馈再验证静止和零位。
-            self.backend.feedback.clear()
-            # 2. 全组失能，并连续验证静止后才能设置零点。
-            self.disable()
-            for _ in range(3):
-                self.fresh(0)
-                self.pause(.05)
-            # 3. 每轴只发送一次设零，再等待并多次验证反馈零位。
-            for j in self.config['joints']:
-                self.interrupt()
-                self.backend.special(j, p.ZERO)
-                self.pause(.02)
-            self.pause(.2)
-            for _ in range(3):
-                self.fresh(0, zero=True)
-                self.pause(.05)
+            self._read_ranges()
+            self._zero_disabled()
             # 4. 写入并读回 MIT 模式；READY 阶段仍保持失能。
             for j in self.config['joints']:
                 self.backend.register(j, p.WRITE, 10, 1, interrupt=self.interrupt)
@@ -255,6 +307,8 @@ class Controller:
             raise
 
     def submit(self, command):
+        if self.observation_only:
+            raise SafetyError('observation-only service rejects motion commands')
         if self.state not in ('READY', *self.ACTIVE):
             raise SafetyError('submit requires READY/RUNNING/DEGRADED')
         try:
@@ -309,10 +363,13 @@ class Controller:
         try:
             self.interrupt()
             now = self.clock()
-            if not self.command or now-self.command['timestamp'] >= self.config['command_timeout']:
-                raise SafetyError('algorithm command expired')
-            check_feedback(self.config, self.backend.feedback, now)
-            check_effort(self.config, self.command, self.backend.feedback)
+            if self.observation_only:
+                self._check_observation(now)
+            else:
+                if not self.command or now-self.command['timestamp'] >= self.config['command_timeout']:
+                    raise SafetyError('algorithm command expired')
+                check_feedback(self.config, self.backend.feedback, now)
+                check_effort(self.config, self.command, self.backend.feedback)
             # 按绝对时刻调度：跳过错过的周期，不集中补发历史目标。
             if now >= self.next_tick:
                 period = 1/self.config['rate_hz']
@@ -334,9 +391,12 @@ class Controller:
                 else:
                     for j in self.config['joints']:
                         self.interrupt()
-                        if self.clock()-self.command['timestamp'] >= self.config['command_timeout']:
-                            raise SafetyError('command expired during send group')
-                        self.backend.mit(j, self.command['joints'][j['name']])
+                        if self.observation_only:
+                            self.backend.refresh(j)
+                        else:
+                            if self.clock()-self.command['timestamp'] >= self.config['command_timeout']:
+                                raise SafetyError('command expired during send group')
+                            self.backend.mit(j, self.command['joints'][j['name']])
                         self.metrics[j['name']].sent(self.clock(), deadline, bool(blocked))
             # 接收最多 32 帧，并受时间预算约束；即使迟到也至少尝试接收一次。
             budget = min(self.next_tick, self.clock()+.0003)
@@ -347,8 +407,11 @@ class Controller:
                 m.unobserved < self.config['max_unobserved']
                 for m in self.metrics.values()
             ):
-                self.transition('RUNNING')
-            check_feedback(self.config, self.backend.feedback, self.clock())
+                self.transition('OBSERVING' if self.observation_only else 'RUNNING')
+            if self.observation_only:
+                self._check_observation(self.clock())
+            else:
+                check_feedback(self.config, self.backend.feedback, self.clock())
         except Exception as exc:
             self.stop(str(exc), fault=True)
 
@@ -359,6 +422,8 @@ class Controller:
         # 先丢弃运动目标；停止失败也不能继续重发旧运动命令。
         self.command = None
         if not self.workspace_confirmed:
+            if self.started is not None and self.finished is None:
+                self.finished = self.clock()
             self.stop_confirmed = None
             self.transition('FAULT' if fault else 'IDLE', reason)
             return
@@ -393,6 +458,8 @@ class Controller:
             reason=self.reason,
             stop_confirmed=self.stop_confirmed,
             supported_only=False,
+            observation_only=self.observation_only,
+            target_rate_hz=self.config['rate_hz'],
             stop_required=self.workspace_confirmed,
             backend='socketcan' if self.hardware else 'simulation',
             timestamp=now,
@@ -408,7 +475,7 @@ class Controller:
             feedback=feedback,
             metrics={n: m.snapshot(elapsed) for n, m in self.metrics.items()},
             events=list(self.events),
-            configuration_errors=readiness(
+            configuration_errors=[] if self.observation_only else readiness(
                 self.config, self.hardware, ranges=self.protocol_ranges or None,
             ),
         )

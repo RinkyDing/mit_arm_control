@@ -110,6 +110,8 @@ class IPCServer:
             self.mailbox.request_stop('operator stop')
             return {'queued': True, 'ticket': self.mailbox.serial}
         # 每条命令先校验再覆盖目标槽；回执只表示接收，不表示电机执行。
+        if op in ('arm', 'submit') and self.mailbox.snapshot.get('observation_only'):
+            raise ValueError('observation-only service rejects motion operations')
         if op == 'submit':
             if self.mailbox.snapshot['state'] not in ('READY', 'RUNNING', 'DEGRADED'):
                 raise ValueError('submit requires READY/RUNNING/DEGRADED')
@@ -123,7 +125,7 @@ class IPCServer:
             self.mailbox.put_command(cmd)
             return {'queued': True, 'seq': cmd['seq']}
         # ticket 标识本次生命周期请求，SDK 不能用上一次完成状态作为确认。
-        if op in ('arm', 'reset_fault'):
+        if op in ('arm', 'observe', 'reset_fault'):
             self.mailbox.last_error = None
             self.mailbox.serial += 1
             self.mailbox.actions.put_nowait((op, msg, self.mailbox.serial))

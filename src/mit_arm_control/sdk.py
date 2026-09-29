@@ -74,6 +74,12 @@ class ArmClient:
         # arm 仅等待 READY；首条有效静止目标提交后才执行使能。
         return self._wait('READY', timeout, ack['ticket'])
 
+    def observe(self, *, set_zero=False, workspace_ready=False, zero_pose=False, timeout=15.):
+        # 只在观察服务中启动查询；可选先归零，不提交 MIT 目标、不使能。
+        ack = self._rpc('observe', set_zero=set_zero, workspace_ready=workspace_ready,
+                        zero_pose=zero_pose)
+        return self._wait('OBSERVING', timeout, ack['ticket'])
+
     def submit(self, joints, *, timestamp=None, sequence=None):
         seq = self.sequence if sequence is None else sequence
         result = self._rpc('submit', command=dict(seq=seq,

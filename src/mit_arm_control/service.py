@@ -9,7 +9,7 @@ import signal
 import subprocess
 import time
 from .backend import SimBackend, SocketCAN
-from .config import readiness
+from .config import readiness, select_joints, finite
 from .controller import Controller
 from .ipc import Mailbox, IPCServer, AsyncLogger
 
@@ -42,9 +42,16 @@ def hardware_locks(config, commissioned=True):
         raise
 
 
-def run(config, socket_path, hardware=False, result_path=None):
+def run(config, socket_path, hardware=False, result_path=None, *,
+        observation_only=False, joints=None, query_rate=None):
     # 默认模拟后端；实机需显式开启并完成配置，构造后端本身不会使能。
-    errors = readiness(config, hardware)
+    if observation_only:
+        rate = config['rate_hz'] if query_rate is None else query_rate
+        if not finite(rate) or not 0 < rate <= 1000:
+            raise ValueError('observation query rate must be in (0, 1000] Hz per axis')
+        config = dict(config, joints=select_joints(config, joints or ['J1','J2','J3','J4','J5','J6']),
+                      rate_hz=rate)
+    errors = [] if observation_only else readiness(config, hardware)
     if errors:
         raise ValueError('; '.join(errors))
     locks, backend, ipc = [], None, None
@@ -66,9 +73,10 @@ def run(config, socket_path, hardware=False, result_path=None):
 
     try:
         if hardware:
-            locks = hardware_locks(config)
+            locks = hardware_locks(config, commissioned=not observation_only)
         backend = SocketCAN(config['joints']) if hardware else SimBackend(config['joints'])
-        controller = Controller(config, backend, hardware, cancelled=mailbox.stop.is_set, publish=publish)
+        controller = Controller(config, backend, hardware, cancelled=mailbox.stop.is_set,
+                                publish=publish, observation_only=observation_only)
         publish()
         ipc = IPCServer(socket_path, mailbox, config)
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -104,6 +112,10 @@ def run(config, socket_path, hardware=False, result_path=None):
                                 args.get('workspace_ready', args.get('supported')),
                                 args.get('zero_pose'),
                             )
+                        elif op == 'observe':
+                            controller.observe(args.get('set_zero', False),
+                                               args.get('workspace_ready', False),
+                                               args.get('zero_pose', False))
                         else:
                             controller.reset_fault()
                     except Exception as exc:

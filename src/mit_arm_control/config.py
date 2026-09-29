@@ -90,3 +90,27 @@ def readiness(c, hardware=False, ranges=None):
         if any(lim[k] <= 0 for k in ("q_rate", "dq_rate", "kp_rate", "kd_rate", "tau_rate")):
             errors.append(f"{name}: command rate limits must be positive")
     return errors
+
+
+def select_joints(config, names):
+    if not names or len(names) != len(set(names)):
+        raise ValueError('observation requires unique joint names')
+    by_name = {joint['name']: joint for joint in config['joints']}
+    joints, ids = [], set()
+    for name in names:
+        if name not in by_name:
+            raise ValueError(f'unknown joint: {name}')
+        joint = by_name[name]
+        if not isinstance(joint.get('bus'), str) or not joint['bus']:
+            raise ValueError(f'{name}: bus required')
+        for key, maximum in (('can_id', 15), ('master_id', 0x7FE)):
+            value = joint.get(key)
+            if type(value) is not int or not 1 <= value <= maximum:
+                raise ValueError(f'{name}: invalid {key}')
+            identity = (joint['bus'], value)
+            if identity in ids:
+                raise ValueError(f'{name}: duplicate bus ID')
+            ids.add(identity)
+        # 尚未标定方向/零位时，明确显示电机原始坐标，不冒充机械臂关节坐标。
+        joints.append(dict(joint, direction=1, zero_joint=0.0))
+    return joints

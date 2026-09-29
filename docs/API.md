@@ -99,3 +99,11 @@ FAULT → 显式 reset_fault + 失能确认 → IDLE
 ## 运行时协议量程
 
 arm 自动读取每轴寄存器 21/22/23，不写回这些寄存器，不改 JSON 或机械限制。全部有效且兼容限制后用于发送编码和反馈解码。`get_state()["protocol_ranges"]["J1"]` 返回例如 `{"pmax": 12.5, "vmax": 50.0, "tmax": 10.0}`；尚未完成本轮量程检查时该映射为空。无需算法提交量程。每次 arm 重读，读取失败不自动使用默认值继续启动。
+
+## 观察模式
+
+服务用 `serve --observe-only --joints J1 J2 J3 J4 J5 J6 --query-rate 1000` 启动，实机另加 --hardware。复用原 Controller、IPC、SocketCAN、统计和日志，服务端禁止 arm/submit。
+
+SDK 新增 `observe(set_zero=False, workspace_ready=False, zero_pose=False, timeout=15.)`，等待 OBSERVING。set_zero=True 需双确认并复用已有失能/静止/归零验证；不写 MIT 模式、不使能。否则只读取实际量程并启动查询。后续只需 get_state，不提交运动目标；反馈超时仍会故障锁存。状态快照增加 observation_only、target_rate_hz。观察模式采用原始电机坐标，方向/零位偏移为 +1/0。
+
+observe 使用控制客户端权限；role='observer' 是只能查看快照的旁观连接，不能发起操作。stop/断联复用原有流程，归零会话需要失能确认，纯只读会话不改变已有使能状态。重新开始需明确处理故障，不自动恢复。
