@@ -20,7 +20,12 @@ def main():
                         help='monitor only: selected axes (default J1..J6)')
     parser.add_argument('--query-rate', type=float, default=10., help='monitor only: queries/s per axis')
     parser.add_argument('--duration', type=float, default=0., help='monitor only: seconds, 0 until Ctrl+C')
+    parser.add_argument('--set-zero', action='store_true', help='monitor only: disable, zero and verify before querying')
+    parser.add_argument('--zero-pose-confirmed', action='store_true', help='monitor only: operator placed the fixed zero pose')
+    parser.add_argument('--print-rate', type=float, default=1., help='monitor only: reports/s, up to 20')
     args = parser.parse_args()
+    if args.operation != 'monitor' and (args.set_zero or args.zero_pose_confirmed):
+        parser.error('--set-zero/--zero-pose-confirmed apply only to monitor')
     c = load_config(args.config)
     # 纯配置检查不打开 CAN，适合先查看仍缺哪些参数。
     if args.operation == 'check-config':
@@ -30,7 +35,9 @@ def main():
     if args.operation == 'monitor':
         if not args.hardware:
             parser.error('monitor requires --hardware explicitly')
-        run_monitor(c, args.joints, args.query_rate, args.duration)
+        run_monitor(c, args.joints, args.query_rate, args.duration,
+                    set_zero=args.set_zero, zero_pose_confirmed=args.zero_pose_confirmed,
+                    report_rate=args.print_rate)
         return 0
     if args.operation == 'diagnose':
         if not args.hardware:

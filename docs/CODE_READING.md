@@ -345,8 +345,37 @@ PYTHONPATH=src python3 -m mit_arm_control monitor \
   --joints J1 J2 J3 J4 J5 J6 --query-rate 10 --duration 0
 ```
 
-monitor 读取所选轴模式与实际量程，然后周期发送状态查询；每秒显示一组反馈。queries 是已成功提交的查询数，RX 是收到的有效反馈数，不保证逐帧配对；age 是反馈年龄。NO_FEEDBACK 表示尚未收到反馈；STALE 表示年龄超过 max(0.2秒, 3个查询周期)。RECENT 仅表示近期收到，不是整臂安全判定。status=0 为失能、1 为使能，其他值需核查驱动故障；mode=1 仅说明 MIT 模式，不表示使能。
+monitor 默认读取所选轴模式与实际量程，然后周期发送状态查询；默认每秒显示一组反馈，--print-rate 可以调整。queries 是已成功提交的查询数，RX 是收到的有效反馈数，不保证逐帧配对；age 是反馈年龄。NO_FEEDBACK 表示尚未收到反馈；STALE 表示年龄超过 max(0.2秒, 3个查询周期)。RECENT 仅表示近期收到，不是整臂安全判定。status=0 为失能、1 为使能，其他值需核查驱动故障；mode=1 仅说明 MIT 模式，不表示使能。
 
-q/dq/tau 是电机当前坐标下的量，不应用尚未确认的方向或零位。monitor 不会归零、写模式或发送任何 MIT/使能/失能命令；Ctrl+C 仅结束查询，不会改变电机已有使能状态。本模式不要求 hardware_commissioned，但仍检查 ID、总线锁和接口 CAN FD 参数。只读成功不表示已通过运动配置验收。
+q/dq/tau 是电机当前坐标下的量，不应用尚未确认的方向或零位。不带 --set-zero 的 monitor 不会归零、写模式或发送任何 MIT/使能/失能命令；Ctrl+C 仅结束查询，不会改变电机已有使能状态。本模式不要求 hardware_commissioned，但仍检查 ID、总线锁和接口 CAN FD 参数。只读成功不表示已通过运动配置验收。
 
 现有正式控制服务要求整组七轴参与启动；不要通过向其他轴提交零增益来冒充“只测试 J6”。单轴 J6 运动测试需独立限定参与轴与经确认的运动参数，完成只读检查后再安排。
+
+
+### 固定姿态归零后，保持失能手动拖动
+
+只有显式加 `--set-zero --zero-pose-confirmed` 才执行归零初始化。程序只针对 --joints 指定的轴确认失能和静止、每轴设置一次当前零点并多次验证，之后保持失能查询。整个流程不写控制模式，不发送使能或 MIT 目标，不调用正式 Controller.arm，不接管夹爪。
+
+先将机械臂摆到约定固定零姿态并保持静止，再执行：
+
+```bash
+PYTHONPATH=src python3 -m mit_arm_control monitor \
+  --config configs/arm.hardware.template.json --hardware \
+  --joints J1 J2 J3 J4 J5 J6 \
+  --set-zero --zero-pose-confirmed \
+  --query-rate 50 --print-rate 5 --duration 0
+```
+
+等待 `ZERO VERIFIED: all selected motors remain disabled. You may now move the arm by hand.` 后才开始手动拖动。归零阶段不能移动；如果姿态变化、失能未确认或零位验证失败，程序中止而不使能，重新摆好后再运行。部分轴设零失败不代表所有轴已归零；不要在每次查询时反复设置零点，设零可能涉及电机非易失存储。
+
+输出应为 status=0；q 是相对于本次电机零点的角度，方向仍按电机正方向，不是已完成方向标定的机械臂模型角。dq 为 rad/s；tau 是电机反馈估计量，不是人手施加力矩传感器读数。未建立完整运动学模型时，不提供末端三维位置和姿态。50 Hz 查询和 5 Hz 终端显示用于初步联调，不等于硬实时采样或最终遥操作算法频率。
+
+不使能仍可在电机上电且通信正常时读取编码器反馈；但电机不承担主动重力补偿，人手仍需承担重量和机械阻力。Ctrl+C 结束查询，不额外使能或发送运动指令。
+
+实现位置：`calibration.py` 负责监视前的失能归零，`monitor.py` 负责量程读取和查询；正式控制服务的启动逻辑保持独立。
+
+### 后续主臂遥操作方向
+
+阶段顺序为：六轴失能归零与手动反馈检查 → 独立 J6 小范围运动测试 → 整臂重力补偿与拖动 → 主从映射。重力补偿需要真实几何、关节方向、连杆质量/质心、负载与力矩量纲，不能用电机自身 Inertia 代替整臂参数。
+
+主动重力补偿阶段必须使能：算法基于关节反馈计算补偿力矩，经 submit 的 tau_ff 下发，可结合经过调试的阻尼；不是给 tau_ff=0 就实现零重力。主臂到从臂还需要独立的零位/方向/尺度映射、限位和失联策略。本次只实现手动拖动反馈检查，不驱动 J6，也未实现补偿算法。

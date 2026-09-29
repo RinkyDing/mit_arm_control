@@ -49,3 +49,71 @@ class MonitorTests(unittest.TestCase):
                 query_loop(self.bus, self.joints, clock=self.clock, emit=lambda _: None)
         refresh.assert_not_called()
         self.assertEqual(self.bus.protocol_ranges, {})
+
+    def test_zero_then_hand_motion_never_enables_or_sends_mit(self):
+        from mit_arm_control.protocol import DISABLE, ZERO, ENABLE
+        for state in self.bus.state.values():
+            state.update(status=1, q=.5)
+        lines = []
+
+        def display(line):
+            lines.append(line)
+            if line.startswith('ZERO VERIFIED:'):
+                # 模拟校准结束后手动转动 J6；控制端没有发送运动目标。
+                self.bus.state['J6']['q'] = .25
+
+        with patch.object(self.bus, 'mit') as mit:
+            query_loop(self.bus, self.joints, 50., .25, clock=self.clock,
+                       emit=display, set_zero=True, report_rate=5.)
+        mit.assert_not_called()
+        history = self.bus.special_history
+        self.assertFalse(any(code == ENABLE for _, code in history))
+        self.assertEqual({name for name, code in history if code == DISABLE}, set(self.names))
+        self.assertEqual([name for name, code in history if code == ZERO], self.names)
+        self.assertTrue(all(state['status'] == 0 for state in self.bus.state.values()))
+        self.assertTrue(any('J6 ' in line and 'q=+0.25000' in line for line in lines))
+
+    def test_failed_disable_prevents_zero(self):
+        from mit_arm_control.protocol import ZERO
+        self.bus.state['J3']['status'] = 1
+        self.bus.ignore_disable.add('J3')
+        with self.assertRaisesRegex(RuntimeError, 'timeout'):
+            query_loop(self.bus, self.joints, clock=self.clock, set_zero=True, emit=lambda _: None)
+        self.assertFalse(any(code == ZERO for _, code in self.bus.special_history))
+
+    def test_zero_mismatch_aborts_monitoring(self):
+        from mit_arm_control.protocol import ZERO
+        self.bus.state['J3']['q'] = .5
+        original = self.bus.special
+
+        def ignore_zero(joint, code):
+            if joint['name'] == 'J3' and code == ZERO:
+                return
+            original(joint, code)
+
+        lines = []
+        with patch.object(self.bus, 'special', side_effect=ignore_zero):
+            with self.assertRaisesRegex(RuntimeError, 'zero verification failed'):
+                query_loop(self.bus, self.joints, clock=self.clock, set_zero=True, emit=lines.append)
+        self.assertFalse(any(line.startswith('ZERO VERIFIED:') for line in lines))
+
+    def test_zero_requires_explicit_pose_confirmation_before_bus_access(self):
+        from mit_arm_control.monitor import run_monitor
+        with patch('mit_arm_control.monitor.SocketCAN') as backend:
+            with self.assertRaisesRegex(ValueError, 'zero-pose-confirmed'):
+                run_monitor(self.config, self.names, set_zero=True)
+        backend.assert_not_called()
+
+    def test_motion_during_zeroing_is_rejected(self):
+        from mit_arm_control.protocol import DISABLE, ZERO
+        original = self.bus.special
+
+        def still_moving(joint, code):
+            original(joint, code)
+            if code == DISABLE:
+                self.bus.state[joint['name']]['dq'] = .5
+
+        with patch.object(self.bus, 'special', side_effect=still_moving):
+            with self.assertRaisesRegex(RuntimeError, 'moving during calibration'):
+                query_loop(self.bus, self.joints, clock=self.clock, set_zero=True, emit=lambda _: None)
+        self.assertFalse(any(code == ZERO for _, code in self.bus.special_history))

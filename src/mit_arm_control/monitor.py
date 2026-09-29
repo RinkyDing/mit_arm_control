@@ -1,10 +1,11 @@
-"""只读监视：读取实际量程并查询反馈，不改变模式、零位或使能状态。"""
+"""反馈监视：默认只读，可选先失能归零；从不发送使能或 MIT 指令。"""
 import math
 import os
 import signal
 import time
 
 from .backend import SocketCAN
+from .calibration import zero_disabled
 from .config import finite
 from .protocol import READ
 from .service import hardware_locks
@@ -35,7 +36,7 @@ def select_joints(config, names):
 
 
 def query_loop(bus, joints, rate=10., duration=0., *, clock=time.monotonic,
-               cancelled=lambda: False, emit=print):
+               cancelled=lambda: False, emit=print, set_zero=False, report_rate=1.):
     def interrupt():
         if cancelled():
             raise InterruptedError('monitor stopped')
@@ -52,13 +53,15 @@ def query_loop(bus, joints, rate=10., duration=0., *, clock=time.monotonic,
              f"PMAX={values[1]:g} VMAX={values[2]:g} TMAX={values[3]:g}")
     bus.protocol_ranges = ranges
     bus.feedback.clear()
+    if set_zero:
+        zero_disabled(bus, joints, clock=clock, cancelled=cancelled, emit=emit)
     baseline = dict(bus.rx_seq)
     sent = {joint['name']: 0 for joint in joints}
     errors = {joint['name']: 0 for joint in joints}
     period = 1. / rate
     started = clock()
     next_query = started
-    next_report = started + 1.
+    next_report = started + 1. / report_rate
 
     def report():
         now = clock()
@@ -76,7 +79,7 @@ def query_loop(bus, joints, rate=10., duration=0., *, clock=time.monotonic,
                  f"tau={feedback['tau']:+.4f}Nm status={feedback['status']} "
                  f"MOS={feedback['mos_temperature']}C rotor={feedback['rotor_temperature']}C")
 
-    # 退出只关闭查询；本程序从不接管电机，也不发送失能来改变已有状态。
+    # 查询阶段不改变使能状态；可选归零流程已确认保持失能。
     while not cancelled() and (not duration or clock() - started < duration):
         now = clock()
         if now >= next_query:
@@ -93,15 +96,20 @@ def query_loop(bus, joints, rate=10., duration=0., *, clock=time.monotonic,
         bus.poll(min(.005, max(0., next_query - clock())))
         if clock() >= next_report:
             report()
-            next_report = clock() + 1.
+            next_report = clock() + 1. / report_rate
     report()
 
 
-def run_monitor(config, names, rate=10., duration=0.):
+def run_monitor(config, names, rate=10., duration=0., *,
+                set_zero=False, zero_pose_confirmed=False, report_rate=1.):
     if not finite(rate) or not 0 < rate <= 100:
         raise ValueError('query-rate must be in (0, 100] Hz per axis')
     if not finite(duration) or duration < 0:
         raise ValueError('duration must be nonnegative; 0 means until Ctrl+C')
+    if set_zero and zero_pose_confirmed is not True:
+        raise ValueError('--set-zero requires --zero-pose-confirmed after placing the arm')
+    if not finite(report_rate) or not 0 < report_rate <= min(20., rate):
+        raise ValueError('print-rate must be positive, <= query-rate and <= 20 Hz')
     joints = select_joints(config, names)
     locks, bus, handlers = [], None, {}
     stopping = False
@@ -115,8 +123,12 @@ def run_monitor(config, names, rate=10., duration=0.):
         for sig in (signal.SIGINT, signal.SIGTERM):
             handlers[sig] = signal.signal(sig, request_exit)
         bus = SocketCAN(joints)
-        print('READ ONLY: motor coordinates; no zero/mode writes/enable/disable/MIT commands.')
-        query_loop(bus, joints, rate, duration, cancelled=lambda: stopping)
+        if set_zero:
+            print('ZERO THEN MONITOR: motor coordinates; disable/zero only, never enable or MIT.')
+        else:
+            print('READ ONLY: motor coordinates; no zero/mode writes/enable/disable/MIT commands.')
+        query_loop(bus, joints, rate, duration, cancelled=lambda: stopping,
+                   set_zero=set_zero, report_rate=report_rate)
     except InterruptedError:
         if not stopping:
             raise
