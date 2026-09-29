@@ -492,6 +492,7 @@ class Controller:
         feedback = {name: dict(f, age_ms=(now-f['timestamp'])*1000) for name, f in self.backend.feedback.items()}
         return dict(
             version=1,
+            joint_names=[j['name'] for j in self.config['joints']],
             state=self.state,
             reason=self.reason,
             stop_confirmed=self.stop_confirmed,

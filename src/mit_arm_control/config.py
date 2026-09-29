@@ -15,12 +15,15 @@ def finite(x):
     return type(x) in (int, float) and math.isfinite(x)
 
 
-def load_config(path):
+def load_config(path, *, no_gripper=False):
     c = json.loads(Path(path).read_text())
     if c.get("version") != 1:
         raise ValueError("configuration version must be 1")
-    if [j.get("name") for j in c.get("joints", [])] != list(NAMES):
-        raise ValueError("joints must be ordered J1..J6, gripper")
+    if no_gripper:
+        c['joints'] = [j for j in c.get('joints', []) if j.get('name') != 'gripper']
+    expected = NAMES[:-1] if no_gripper else NAMES
+    if [j.get("name") for j in c.get("joints", [])] != list(expected):
+        raise ValueError("joints must be ordered " + ", ".join(expected))
     for j in c["joints"]:
         if j.get("model") != ("4340_48V" if j["name"] in ("J2", "J3") else "4310_48V"):
             raise ValueError(f"{j['name']}: unexpected robot model")

@@ -3,7 +3,6 @@ import argparse
 import math
 import time
 from mit_arm_control import ArmClient
-from mit_arm_control.config import NAMES
 
 p = argparse.ArgumentParser()
 p.add_argument('--socket', default='/tmp/mit-arm-control.sock')
@@ -44,8 +43,9 @@ with ArmClient(a.socket) as client:
     else:
         if state['backend'] != 'simulation':
             raise RuntimeError('motion example is only for the simulator')
-        client.arm()
-        initial = {n: dict(q_des=0., dq_des=0., kp=2., kd=.1, tau_ff=0.) for n in NAMES}
+        state = client.arm()
+        names = state['joint_names']
+        initial = {n: dict(q_des=0., dq_des=0., kp=2., kd=.1, tau_ff=0.) for n in names}
         client.submit(initial)
         begin = time.monotonic()
         try:
@@ -54,7 +54,7 @@ with ArmClient(a.socket) as client:
                 # Smooth, small position target. This is not a real-arm trajectory.
                 q = .02*(1-math.cos(2*math.pi*.25*t))
                 dq = .02*2*math.pi*.25*math.sin(2*math.pi*.25*t)
-                client.submit({n: dict(q_des=q, dq_des=dq, kp=2., kd=.1, tau_ff=0.) for n in NAMES})
+                client.submit({n: dict(q_des=q, dq_des=dq, kp=2., kd=.1, tau_ff=0.) for n in names})
                 time.sleep(.005)  # algorithm ~200 Hz, transport independently ~1 kHz
         finally:
             state = client.stop()

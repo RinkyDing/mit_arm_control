@@ -18,11 +18,12 @@ def main():
     parser.add_argument('--observe-only', action='store_true', help='serve only: queries allowed, motion rejected')
     parser.add_argument('--joints', nargs='+', help='observe-only: selected axes, default J1..J6')
     parser.add_argument('--query-rate', type=float, help='observe-only: target queries/s per axis, up to 1000')
+    parser.add_argument('--no-gripper', action='store_true', help='use J1..J6 only')
     args = parser.parse_args()
     if (args.observe_only or args.joints or args.query_rate is not None) and (
             args.operation != 'serve' or not args.observe_only):
         parser.error('--joints/--query-rate require serve --observe-only')
-    c = load_config(args.config)
+    c = load_config(args.config, no_gripper=args.no_gripper)
     # 纯配置检查不打开 CAN，适合先查看仍缺哪些参数。
     if args.operation == 'check-config':
         errors = readiness(c, args.hardware)

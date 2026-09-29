@@ -1,6 +1,6 @@
 """Validation is separate from transport; rejected commands are never clipped."""
 import math
-from .config import NAMES, finite
+from .config import finite
 from .protocol import FIELDS
 
 
@@ -19,8 +19,8 @@ def validate_command(c, cmd, now, previous=None):
         raise SafetyError('command expired or timestamp in future')
     if previous and (seq <= previous['seq'] or stamp <= previous['timestamp']):
         raise SafetyError('out-of-order command')
-    if not isinstance(cmd['joints'], dict) or set(cmd['joints']) != set(NAMES):
-        raise SafetyError('command must include all seven axes')
+    if not isinstance(cmd['joints'], dict) or set(cmd['joints']) != {j['name'] for j in c['joints']}:
+        raise SafetyError('command must include exactly the active joints')
     for j in c['joints']:
         name, lim = j['name'], j['limits']
         t = cmd['joints'][name]

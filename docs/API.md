@@ -2,12 +2,12 @@
 
 ## 1. 代码放在哪里
 
-项目：`/home/rinky/damiao_ws/mit_arm_control`。Python 3.10+、Linux，无需 ROS。
+以下命令均在克隆后的项目根目录 `mit_arm_control/` 执行。Python 3.10+、Linux，无需 ROS。
 
 - 算法程序建议放在 `algorithms/`，例如 `algorithms/main.py`，也可使用独立仓库。
 - 算法只导入 `from mit_arm_control import ArmClient`，无需修改 `src/mit_arm_control/`。
 - `examples/sim_algorithm.py` 是可运行的模拟运动/实机观察示例。
-- 在项目根目录使用 `PYTHONPATH=src python3 algorithms/main.py` 运行。独立仓库可先在算法的虚拟环境中执行 `python3 -m pip install -e /home/rinky/damiao_ws/mit_arm_control`。
+- 在项目根目录使用 `PYTHONPATH=src python3 algorithms/main.py` 运行。独立仓库可先在算法的虚拟环境中执行 `python3 -m pip install -e ../mit_arm_control`。
 
 ## 2. 启动方式：两个进程
 
@@ -18,7 +18,7 @@
 终端一，在项目根目录执行：
 
 ```bash
-PYTHONPATH=src python3 -m mit_arm_control serve --config configs/simulation.json
+PYTHONPATH=src python3 -m mit_arm_control serve --config configs/simulation.json --no-gripper
 ```
 
 终端二：
@@ -37,7 +37,7 @@ PYTHONPATH=src python3 algorithms/main.py
 
 ```bash
 PYTHONPATH=src python3 -m mit_arm_control serve \
-  --config configs/arm.hardware.json --hardware
+  --config configs/arm.hardware.json --hardware --no-gripper
 ```
 
 另一终端运行算法程序。`sim_algorithm.py` 的运动示例只允许模拟后端，不用于实机运动。
@@ -49,7 +49,7 @@ PYTHONPATH=src python3 -m mit_arm_control serve \
 ```bash
 # 终端一：先停掉其他控制服务
 PYTHONPATH=src python3 -m mit_arm_control serve \
-  --config configs/arm.hardware.template.json --hardware --observe-only \
+  --config configs/arm.hardware.template.json --hardware --no-gripper --observe-only \
   --joints J1 J2 J3 J4 J5 J6 --query-rate 400
 
 # 终端二：先摆好固定启动姿态
@@ -77,7 +77,9 @@ PYTHONPATH=src python3 examples/sim_algorithm.py --observe --duration 30 --print
 
 ## 4. 提交目标
 
-运动接口必须完整包含 `J1`、`J2`、`J3`、`J4`、`J5`、`J6`、`gripper`，每轴有以下五个字段：
+使用 `--no-gripper` 启动时，目标必须恰好包含 `J1`～`J6`，不填写 `gripper`。安装夹爪后，完成其配置并去掉 `--no-gripper`，目标须额外包含 `gripper`。
+
+算法通过 `client.get_state()["joint_names"]` 获取本次服务的轴列表；未启用轴不会被初始化、归零或等待反馈。`--no-gripper` 同样适用于 `check-config`、`diagnose`。每轴有以下五个字段：
 
 | 字段 | 含义 | 单位 |
 | --- | --- | --- |
@@ -107,13 +109,13 @@ from your_algorithm import initial_targets, compute_targets
 with ArmClient() as client:
     try:
         state = client.arm()  # 自动归零；调用前已摆好约定姿态
-        # 返回完整七轴静止目标，位置使用 state['feedback'][name]['q']。
+        # 返回全部启用轴静止目标，位置使用 state['feedback'][name]['q']。
         client.submit(initial_targets(state))
         while True:
             state = client.get_state()
             if state['state'] == 'FAULT':
                 raise RuntimeError(state['reason'])
-            targets = compute_targets(state)  # 完整七轴、五字段字典
+            targets = compute_targets(state)  # 全部启用轴、五字段字典
             client.submit(targets)
             time.sleep(0.005)  # 示例节拍；计算耗时也计入更新周期
     except KeyboardInterrupt:
@@ -148,9 +150,8 @@ if f is not None:
 
 缺少某轴反馈时不能自行补零。故障后停止算法更新，记录 `reason`；处理原因后调用 `reset_fault()`，重新摆好启动姿态，再 `arm()`。不要编写自动复位、自动恢复运动的无限重试循环。
 
-## 7. 旧调用迁移
+## 7. 启动与读取的区别
 
-- `arm(workspace_ready=True, zero_pose=True)` → `arm()`。
-- `observe(set_zero=True, workspace_ready=True, zero_pose=True)` → `observe()`。
-- 旧示例选项 `--set-zero --zero-pose-confirmed` 已删除。
-- `connect()`、`get_state()` 不归零；每次主动启动 `arm()` 或 `observe()` 才归零。
+`arm()` 是有副作用的启动操作：读参数并校验、确认失能和静止、设置并验证零点、确认控制模式；成功后返回 `READY`，首条有效静止目标才触发使能。每次工作调用一次，不放在算法循环中。
+
+`get_state()` 只读取服务维护的最新快照，可以在算法循环中重复调用，不重新归零、不使能、不重新执行启动检查。
