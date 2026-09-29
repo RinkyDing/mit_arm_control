@@ -12,8 +12,8 @@
       "name": "J1",
       "model": "4310_48V",
       "bus": "can0",
-      "can_id": 1,
-      "master_id": 17,
+      "can_id": 5,
+      "master_id": 21,
       "direction": null,
       "zero_joint": 0.0,
       "calibration_pose": "暂定固定零姿态：整臂水平贴地放置，J4 通向 J5/J6 的一端朝外，J6 转轴垂直地面；需现场基准照片/标记复现，夹爪开合零位另行确认。",
@@ -36,8 +36,8 @@
       "name": "J2",
       "model": "4340_48V",
       "bus": "can0",
-      "can_id": 2,
-      "master_id": 18,
+      "can_id": 3,
+      "master_id": 19,
       "direction": null,
       "zero_joint": 0.0,
       "calibration_pose": "暂定固定零姿态：整臂水平贴地放置，J4 通向 J5/J6 的一端朝外，J6 转轴垂直地面；需现场基准照片/标记复现，夹爪开合零位另行确认。",
@@ -60,8 +60,8 @@
       "name": "J3",
       "model": "4340_48V",
       "bus": "can0",
-      "can_id": 3,
-      "master_id": 19,
+      "can_id": 2,
+      "master_id": 18,
       "direction": null,
       "zero_joint": 0.0,
       "calibration_pose": "暂定固定零姿态：整臂水平贴地放置，J4 通向 J5/J6 的一端朝外，J6 转轴垂直地面；需现场基准照片/标记复现，夹爪开合零位另行确认。",
@@ -108,8 +108,8 @@
       "name": "J5",
       "model": "4310_48V",
       "bus": "can0",
-      "can_id": 5,
-      "master_id": 21,
+      "can_id": 1,
+      "master_id": 17,
       "direction": null,
       "zero_joint": 0.0,
       "calibration_pose": "暂定固定零姿态：整臂水平贴地放置，J4 通向 J5/J6 的一端朝外，J6 转轴垂直地面；需现场基准照片/标记复现，夹爪开合零位另行确认。",
@@ -177,5 +177,5 @@
       }
     }
   ],
-  "notes": "User-confirmed J1..J7 CAN 01..07, Master 11..17. Fixed repeatable startup pose defines zero; padded drop area, no mechanical holding or hardware watchdog required for this experiment. Direction, limits and gripper zero remain unverified. See docs/ROBOT_MODEL.md."
+  "notes": "User-confirmed J1..J6 CAN IDs 05,03,02,04,01,06; Master IDs 15,13,12,14,11,16 (hex). Gripper unchanged 07/17. Fixed repeatable startup pose defines zero; padded drop area. Direction, limits and gripper zero remain unverified. Use monitor for read-only motor coordinates before commissioning."
 }

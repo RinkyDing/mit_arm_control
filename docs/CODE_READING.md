@@ -4,7 +4,7 @@
 
 建议阅读顺序：
 
-1. 阅读入口、后端和三个命令的区别，了解程序如何启动。
+1. 阅读入口、后端和各命令的区别，了解程序如何启动。
 2. 与算法组一起核对 API 接入约定、单位、初始目标和更新频率。
 3. 按测试/启动步骤先模拟，再填写实机配置、诊断并联调。
 4. 需要追踪实现时，按下表阅读源码。
@@ -110,12 +110,13 @@ PYTHONPATH=/home/rinky/damiao_ws/mit_arm_control/src python3 your_algorithm.py
 
 独立进程让算法计算、崩溃或退出与控制服务分开；服务仍可在命令超时或断联后执行停止。但二者仍共享 CPU 和操作系统，不能据此承诺硬实时。
 
-## serve、check-config、diagnose 的区别
+## serve、check-config、diagnose、monitor 的区别
 
 | 操作 | 是否打开真实 CAN | 是否读写真实电机 | 完成后是否退出 | 用途 |
 | --- | --- | --- | --- | --- |
 | `check-config` | 否，即使带 `--hardware` 也不打开 | 不读、不写 | 是 | 检查 JSON、轴映射、必要字段、范围与准入标记 |
 | `diagnose --hardware` | 是 | 仅发送参数读取请求；不写参数、不归零、不使能、不失能 | 是 | 确认填写的 ID 能回应，查看当前模式和量程 |
+| `monitor --hardware` | 是 | 读取实际量程并循环查询所选轴反馈，不改变使能/模式/零位 | 按 duration 或 Ctrl+C 退出 | 未完成运动配置时先做六轴只读检查 |
 | `serve` | 否 | 仅内存模拟 | 否 | 启动模拟控制服务，等待算法连接 |
 | `serve --hardware` | 是 | 启动时不使能；算法请求 arm/submit/stop 后执行相应事务 | 否 | 启动真实控制服务 |
 
@@ -162,7 +163,7 @@ diagnose 只输出读数，不自动判定它们与模型 MATCH。正式 arm 每
 | `name` | SDK 使用 J1～J6、gripper；gripper 就是 J7 |
 | `model` | J2/J3 是 4340_48V，其余沿用 4310_48V；用于识别型号及提供模拟默认量程；实机 arm 自动读取实际编码量程 |
 | `bus` | Linux 总线名，例如 can0；七轴共线就七轴都填写 can0，无需 CLI 再指定 --can |
-| `can_id/master_id` | 命令/反馈 ID；J1～J7 为 1～7 和 17～23，JSON 用十进制数字，17 对应 0x11 |
+| `can_id/master_id` | 命令/反馈 ID；J1～J6 为 5/3/2/4/1/6 与 21/19/18/20/17/22；夹爪仍为 7/23；JSON 用十进制数字，17 对应 0x11 |
 | `direction` | 电机正向到算法正向的映射，必须实测为 +1 或 -1 |
 | `zero_joint` | 电机设零后，该姿态对应的算法关节角；当前六轴约定为 0 rad |
 | `calibration_pose` | 固定零姿态的现场说明；每次复现，不是自动寻找零姿态的指令 |
@@ -332,3 +333,20 @@ PYTHONPATH=/home/rinky/damiao_ws/mit_arm_control/src python3 /你的算法目录
 SIGKILL、电脑掉电或 CAN 断开时无法保证失能命令送达。当前实验允许失能后落到下方缓冲垫，不提供防坠、重力保持或故障回桌。退出服务后最终报告才写入，需注意不要将上一轮文件当作本轮结果。
 
 若 socket 路径已存在，先确认是否另一个服务仍在运行，不要直接删除正在使用的 socket。算法和服务必须使用同一路径、具备相应用户访问权限。
+
+
+## 首次六轴只读查询（monitor）
+
+尚未补齐方向和机械限制时，用下面的独立命令观察六轴。只需一个进程，不启动 serve 或算法，不调用 arm/submit，也不接触夹爪。
+
+```bash
+PYTHONPATH=src python3 -m mit_arm_control monitor \
+  --config configs/arm.hardware.template.json --hardware \
+  --joints J1 J2 J3 J4 J5 J6 --query-rate 10 --duration 0
+```
+
+monitor 读取所选轴模式与实际量程，然后周期发送状态查询；每秒显示一组反馈。queries 是已成功提交的查询数，RX 是收到的有效反馈数，不保证逐帧配对；age 是反馈年龄。NO_FEEDBACK 表示尚未收到反馈；STALE 表示年龄超过 max(0.2秒, 3个查询周期)。RECENT 仅表示近期收到，不是整臂安全判定。status=0 为失能、1 为使能，其他值需核查驱动故障；mode=1 仅说明 MIT 模式，不表示使能。
+
+q/dq/tau 是电机当前坐标下的量，不应用尚未确认的方向或零位。monitor 不会归零、写模式或发送任何 MIT/使能/失能命令；Ctrl+C 仅结束查询，不会改变电机已有使能状态。本模式不要求 hardware_commissioned，但仍检查 ID、总线锁和接口 CAN FD 参数。只读成功不表示已通过运动配置验收。
+
+现有正式控制服务要求整组七轴参与启动；不要通过向其他轴提交零增益来冒充“只测试 J6”。单轴 J6 运动测试需独立限定参与轴与经确认的运动参数，完成只读检查后再安排。
