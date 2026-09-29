@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import math
 import time
 from . import protocol as p
-from .config import readiness
+from .config import readiness, finite
 from .safety import SafetyError, validate_command, check_feedback, check_effort
 
 
@@ -88,6 +88,7 @@ class Controller:
         self.skipped = 0
         self.events = []
         self.mode_verified = {}
+        self.protocol_ranges = {}
         # 表示已进入过需停止确认的启动流程；不是机械支撑或安全状态证明。
         self.workspace_confirmed = False
         self.next_diagnostic = 0.
@@ -206,14 +207,27 @@ class Controller:
         self.started = self.finished = None
         self.skipped = 0
         self.workspace_confirmed = True
+        self.protocol_ranges = {}  # 每次 arm 都重新读取，不把上一次量程当本次确认。
         self.transition('ARMING')
         try:
-            # 1. 逐轴核对 PMAX / VMAX / TMAX，避免量程不一致造成错误指令。
+            # 1. 逐轴读回实际协议量程；全部有效且能容纳机械限制后才统一生效。
+            # 只改变本次会话的编解码量程，不写量程寄存器、不覆盖 JSON 或机械限制。
+            pending_ranges = {}
             for j in self.config['joints']:
-                for rid, expected in zip((21, 22, 23), p.MODELS[j['model']]):
+                values = []
+                for rid in (21, 22, 23):
                     actual = self.backend.register(j, p.READ, rid, interrupt=self.interrupt)
-                    if not math.isclose(actual, expected, rel_tol=1e-5, abs_tol=1e-5):
-                        raise SafetyError(f"{j['name']}: register {rid} range mismatch")
+                    if not finite(actual) or actual <= 0:
+                        raise SafetyError(f"{j['name']}: invalid register {rid} range: {actual}")
+                    values.append(actual)
+                pending_ranges[j['name']] = tuple(values)
+            errors = readiness(self.config, self.hardware, ranges=pending_ranges)
+            if errors:
+                raise SafetyError('; '.join(errors))
+            self.backend.protocol_ranges = dict(pending_ranges)
+            self.protocol_ranges = dict(pending_ranges)
+            # 旧反馈可能按默认/上次量程解码，清除后重新取得反馈再验证静止和零位。
+            self.backend.feedback.clear()
             # 2. 全组失能，并连续验证静止后才能设置零点。
             self.disable()
             for _ in range(3):
@@ -387,8 +401,14 @@ class Controller:
             last_seq=self.last_seq,
             diagnostic_error=self.diagnostic_error,
             mode_verified=dict(self.mode_verified),
+            protocol_ranges={
+                name: dict(pmax=values[0], vmax=values[1], tmax=values[2])
+                for name, values in self.protocol_ranges.items()
+            },
             feedback=feedback,
             metrics={n: m.snapshot(elapsed) for n, m in self.metrics.items()},
             events=list(self.events),
-            configuration_errors=readiness(self.config, self.hardware),
+            configuration_errors=readiness(
+                self.config, self.hardware, ranges=self.protocol_ranges or None,
+            ),
         )

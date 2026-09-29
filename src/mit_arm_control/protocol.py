@@ -30,8 +30,8 @@ def unquantize(x, lo, hi, bits):
     return x*(hi-lo)/((1 << bits)-1)+lo
 
 
-def pack_mit(j, target):
-    p, v, t = MODELS[j["model"]]
+def pack_mit(j, target, ranges=None):
+    p, v, t = MODELS[j["model"]] if ranges is None else ranges
     # p/v/t 为协议量程；s 为方向，z 为固定零姿态在算法坐标中的角度。
     s, z = j["direction"], j["zero_joint"]
     # 发送前从关节坐标变换到电机坐标，反馈解码执行反向变换。
@@ -67,7 +67,7 @@ def register_request(j, op, rid=0, value=0):
     return Frame(j["bus"], 0x7FF, payload)
 
 
-def decode(j, frame):
+def decode(j, frame, ranges=None):
     """Return parameter or feedback; never let a parameter refresh liveness."""
     if frame.bus != j["bus"] or frame.can_id != j["master_id"]:
         return None
@@ -79,7 +79,7 @@ def decode(j, frame):
         return ("parameter", (d[2], rid, value))
     if len(d) != 8 or d[0] & 15 != j["can_id"]:
         return None
-    p, v, t = MODELS[j["model"]]
+    p, v, t = MODELS[j["model"]] if ranges is None else ranges
     q = unquantize(d[1] << 8 | d[2], -p, p, 16)
     dq = unquantize(d[3] << 4 | d[4] >> 4, -v, v, 12)
     tau = unquantize((d[4] & 15) << 8 | d[5], -t, t, 12)

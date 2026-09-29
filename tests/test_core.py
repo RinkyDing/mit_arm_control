@@ -85,7 +85,7 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(SafetyError): self.ctl.submit(self.cmd())
 
     def test_partial_initialization_failure_stops_every_motor(self):
-        self.bus.registers['J3'][22] = 99
+        self.bus.registers['J3'][22] = float('nan')
         with self.assertRaises(SafetyError): self.ctl.arm(True, True)
         self.assertEqual(self.ctl.state, 'FAULT')
         self.assertTrue(self.ctl.stop_confirmed)

@@ -14,6 +14,8 @@ class SocketCAN:
         self.joints, self.clock = joints, clock
         self.feedback, self.parameters, self.sockets = {}, {}, {}
         self._round_robin = 0
+        # arm 成功读取全组量程后统一替换；启动前默认量程仅用于诊断解析。
+        self.protocol_ranges = {}
         self.rx_seq = {j['name']: 0 for j in joints}
         try:
             for bus in {j['bus'] for j in joints if j.get('bus')}:
@@ -71,7 +73,7 @@ class SocketCAN:
             # 只读诊断允许尚未填写标定；这里的解析默认值不代表实机配置已完成。
             parser_joint = dict(j, direction=j.get('direction') or 1,
                                 zero_joint=j.get('zero_joint') or 0)
-            decoded = p.decode(parser_joint, frame)
+            decoded = p.decode(parser_joint, frame, self.protocol_ranges.get(j['name']))
             if decoded is None:
                 continue
             kind, data = decoded
@@ -93,7 +95,7 @@ class SocketCAN:
         self.send(p.register_request(j, p.STATUS))
 
     def mit(self, j, target):
-        self.send(p.pack_mit(j, target))
+        self.send(p.pack_mit(j, target, self.protocol_ranges.get(j['name'])))
 
     def register(self, j, op, rid, value=0, interrupt=lambda: None):
         # 逐台串行参数事务：先排空并清除旧缓存，再等待本轮响应。
@@ -127,6 +129,8 @@ class SimBackend:
     def __init__(self, joints, clock=time.monotonic):
         self.joints, self.clock = joints, clock
         self.feedback, self.parameters = {}, {}
+        # arm 成功读取全组量程后统一替换；启动前默认量程仅用于诊断解析。
+        self.protocol_ranges = {}
         self.rx_seq = {j['name']: 0 for j in joints}
         self.state = {j['name']: dict(q=j['zero_joint'], dq=0., tau=0., status=0,
                       mos_temperature=25, rotor_temperature=25) for j in joints}
@@ -187,7 +191,7 @@ class SimBackend:
         self._reply(j)
 
     def mit(self, j, target):
-        p.pack_mit(j, target)  # 复用真实编码和量程校验，但不访问 CAN。
+        p.pack_mit(j, target, self.protocol_ranges.get(j['name']))  # 复用真实编码和量程校验，但不访问 CAN。
         self._send()
         s = self.state[j['name']]
         if s['status'] == 1:

@@ -14,6 +14,7 @@ class TransportTests(unittest.TestCase):
         self.joints=load_config(ROOT/'configs/simulation.json')['joints']
         self.bus=SocketCAN.__new__(SocketCAN)
         self.sock=Mock()
+        self.bus.protocol_ranges={}
         self.bus.joints=self.joints
         self.bus.sockets={'can0':self.sock}
         self.bus.feedback={};self.bus.parameters={};self.bus._round_robin=0

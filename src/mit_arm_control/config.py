@@ -37,7 +37,7 @@ def load_config(path):
     return c
 
 
-def readiness(c, hardware=False):
+def readiness(c, hardware=False, ranges=None):
     # 汇总所有缺项供界面展示；未知方向、零位或限制不会被猜测填充。
     errors, ids = [], set()
     if hardware and c.get("hardware_commissioned") is not True:
@@ -63,14 +63,27 @@ def readiness(c, hardware=False):
         if any(not finite(lim.get(k)) for k in LIMIT_KEYS):
             errors.append(f"{name}: incomplete limits")
             continue
-        p, v, t = MODELS[j["model"]]
+        # 实机离线检查不知道电机量程；arm 读回后再检查能否容纳机械限制。
+        actual_range = ranges.get(name) if ranges is not None else (
+            None if hardware else MODELS[j["model"]]
+        )
+        if ranges is not None and actual_range is None:
+            errors.append(f"{name}: missing runtime protocol range")
         z = j.get("zero_joint")
         if not finite(z):
             continue
-        if not (-p+.1 <= lim["q_min"]-z <= 0 <= lim["q_max"]-z <= p-.1
-                and lim["q_min"] < lim["q_max"]):
-            errors.append(f"{name}: position limits must include zero and avoid protocol wrap")
-        if not (0 < lim["dq_max"] <= v and 0 < lim["tau_max"] <= t
+        if not (lim["q_min"] <= z <= lim["q_max"] and lim["q_min"] < lim["q_max"]):
+            errors.append(f"{name}: position limits must include zero")
+        if actual_range is not None:
+            if (len(actual_range) != 3
+                    or any(not finite(value) or value <= 0 for value in actual_range)):
+                errors.append(f"{name}: invalid protocol range")
+            else:
+                p, v, t = actual_range
+                if not (-p+.1 <= lim["q_min"]-z and lim["q_max"]-z <= p-.1
+                        and lim["dq_max"] <= v and lim["tau_max"] <= t):
+                    errors.append(f"{name}: configured limits exceed protocol range or wrap margin")
+        if not (0 < lim["dq_max"] and 0 < lim["tau_max"]
                 and 0 < lim["kp_max"] <= 500 and 0 < lim["kd_max"] <= 5
                 and 0 < lim["temperature_max"] <= 100):
             errors.append(f"{name}: invalid physical/gain limits")

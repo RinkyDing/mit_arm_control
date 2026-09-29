@@ -27,7 +27,7 @@ client.close()
 | --- | --- |
 | connect() | 连接并获得控制权，不触发电机动作；第二个控制客户端被拒绝 |
 | get_state() | 最新反馈快照、反馈年龄、状态、故障、配置错误和统计；未观测轴不会伪造为零 |
-| arm(workspace_ready, zero_pose) | 在完整配置及双重确认后校验量程、失能静止、设零验证、逐轴模式确认；返回 READY |
+| arm(workspace_ready, zero_pose) | 在完整配置及双重确认后读取并采用实际协议量程、校验机械限制兼容性、失能静止、设零验证、逐轴模式确认；返回 READY |
 | submit(joints, timestamp=None, sequence=None) | 完整七轴 MIT 目标；SDK 默认生成主机 monotonic 时间和递增序号 |
 | stop() | 请求全体失能并等待本次请求结果；未确认抛异常；未曾 arm 的会话不写电机、不声称失能已确认 |
 | reset_fault() | 要求 FAULT；曾启动时重新取得失能反馈，返回 IDLE，不自动恢复运动 |
@@ -95,3 +95,7 @@ FAULT → 显式 reset_fault + 失能确认 → IDLE
 | log_dropped/log_failures | 日志队列满而丢弃的周期统计数/日志消费者输出失败数 |
 
 量化位宽：位置16位、速度/Kp/Kd/前馈力矩各12位；CAN FD+BRS 仍携带8字节 MIT 数据。1 kHz 是目标，并非硬实时保证。绝对时间调度不集中补发，迟到量也不包括 socket 写入之后的 USB/总线排队延迟。
+
+## 运行时协议量程
+
+arm 自动读取每轴寄存器 21/22/23，不写回这些寄存器，不改 JSON 或机械限制。全部有效且兼容限制后用于发送编码和反馈解码。`get_state()["protocol_ranges"]["J1"]` 返回例如 `{"pmax": 12.5, "vmax": 50.0, "tmax": 10.0}`；尚未完成本轮量程检查时该映射为空。无需算法提交量程。每次 arm 重读，读取失败不自动使用默认值继续启动。
