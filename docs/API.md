@@ -1,64 +1,20 @@
 # 算法组接入指南
 
-## 1. 代码放在哪里
+## 1. 仓库结构
 
-以下命令均在克隆后的项目根目录 `mit_arm_control/` 执行。Python 3.10+、Linux，无需 ROS。
+Python 3.10+、Linux，无需 ROS。
 
-- 算法程序建议放在 `algorithms/`，例如 `algorithms/main.py`，也可使用独立仓库。
-- 算法只导入 `from mit_arm_control import ArmClient`，无需修改 `src/mit_arm_control/`。
-- `examples/sim_algorithm.py` 是可运行的模拟运动/实机观察示例。
-- 在项目根目录使用 `PYTHONPATH=src python3 algorithms/main.py` 运行。独立仓库可先在算法的虚拟环境中执行 `python3 -m pip install -e ../mit_arm_control`。
+| 目录 | 内容 |
+| --- | --- |
+| `src/mit_arm_control/` | 控制服务和 `ArmClient` SDK |
+| `configs/` | 模拟与实机配置 |
+| `examples/` | 可运行的算法接入示例 |
+| `tests/` | 离线与模拟测试 |
+| `docs/API.md` | 本接入指南 |
 
-## 2. 启动方式：两个进程
+算法代码位置不限。确保算法的 Python 环境能导入 `mit_arm_control`，再通过 `ArmClient().connect()` 连接已启动的服务即可。
 
-先启动控制服务，再启动算法程序。两者使用同一台机器、同一 Linux 用户。服务启动和 SDK 连接不会使能或归零。
-
-### 模拟联调
-
-终端一，在项目根目录执行：
-
-```bash
-PYTHONPATH=src python3 -m mit_arm_control serve --config configs/simulation.json --no-gripper
-```
-
-终端二：
-
-```bash
-PYTHONPATH=src python3 examples/sim_algorithm.py --duration 30
-# 接入自己的算法后改为：
-PYTHONPATH=src python3 algorithms/main.py
-```
-
-模拟后端用于验证接口与流程，不代表真实机械臂动力学。
-
-### 实机运动
-
-由设备负责人提供已确认 ID 和限制设置的配置，例如 `configs/arm.hardware.json`；该文件名是约定示例，仓库模板不能直接作为已验收配置。
-
-```bash
-PYTHONPATH=src python3 -m mit_arm_control serve \
-  --config configs/arm.hardware.json --hardware --no-gripper
-```
-
-另一终端运行算法程序。`sim_algorithm.py` 的运动示例只允许模拟后端，不用于实机运动。
-
-**每次调用 `arm()` 或 `observe()` 前，把机械臂摆回约定固定启动姿态并保持静止；调用后会自动执行失能、设零及验证。** 不再传入确认参数，也没有跳过归零的开关。归零不会自动把机械臂运动到固定姿态。
-
-### 六轴手动拖动观察
-
-```bash
-# 终端一：先停掉其他控制服务
-PYTHONPATH=src python3 -m mit_arm_control serve \
-  --config configs/arm.hardware.template.json --hardware --no-gripper --observe-only \
-  --joints J1 J2 J3 J4 J5 J6 --query-rate 400
-
-# 终端二：先摆好固定启动姿态
-PYTHONPATH=src python3 examples/sim_algorithm.py --observe --duration 30 --print-rate 1
-```
-
-`observe()` 返回后才开始手动拖动。观察模式始终不使能，不接收 `submit()`。观察模式的数据为电机角度坐标，不能直接当作尚未完成方向标定的机械臂模型坐标。
-
-## 3. 接口速查
+## 2. 接口速查
 
 | 接口 | 用法及结果 |
 | --- | --- |
@@ -75,7 +31,7 @@ PYTHONPATH=src python3 examples/sim_algorithm.py --observe --duration 30 --print
 
 如需不同服务地址，服务使用 `--socket /tmp/my-arm.sock`，客户端使用 `ArmClient('/tmp/my-arm.sock')`。
 
-## 4. 提交目标
+## 3. 提交目标
 
 使用 `--no-gripper` 启动时，目标必须恰好包含 `J1`～`J6`，不填写 `gripper`。安装夹爪后，完成其配置并去掉 `--no-gripper`，目标须额外包含 `gripper`。
 
@@ -97,7 +53,7 @@ PYTHONPATH=src python3 examples/sim_algorithm.py --observe --duration 30 --print
 
 高级调用 `submit(joints, timestamp=..., sequence=...)` 可显式指定同机 `time.monotonic()` 时间戳和严格递增序号；一般省略，由 SDK 自动生成。不要使用 `time.time()`。
 
-## 5. 算法程序结构
+## 4. 算法程序结构
 
 下面是接入结构，`your_algorithm` 由算法组实现，增益需使用双方确认的配置。先在模拟环境验证。
 
@@ -126,6 +82,55 @@ with ArmClient() as client:
 ```
 
 `submit()` 成功不表示目标已经执行；后续仍须检查状态。算法异常、连接断开或目标过期都会触发服务的停止处理。`stop()` 是失能，不是回零、回桌或制动轨迹；需要回桌时由算法先完成轨迹再调用。
+
+## 5. 启动方式：两个进程
+
+以下服务和示例命令在项目根目录执行。先启动控制服务，再启动算法程序。两者使用同一台机器、同一 Linux 用户。服务启动和 SDK 连接不会使能或归零。
+
+### 模拟联调
+
+终端一，在项目根目录执行：
+
+```bash
+PYTHONPATH=src python3 -m mit_arm_control serve --config configs/simulation.json --no-gripper
+```
+
+终端二：
+
+```bash
+PYTHONPATH=src python3 examples/sim_algorithm.py --duration 30
+```
+
+运行自己的算法时，先在其 Python 环境安装 SDK：在本项目根目录执行 `python3 -m pip install -e .`，之后可从任意目录按算法自身入口启动，无需把代码放进本仓库。
+
+模拟后端用于验证接口与流程，不代表真实机械臂动力学。
+
+### 实机运动
+
+由设备负责人提供已确认 ID 和限制设置的配置，例如 `configs/arm.hardware.json`；该文件名是约定示例，仓库模板不能直接作为已验收配置。
+
+```bash
+PYTHONPATH=src python3 -m mit_arm_control serve \
+  --config configs/arm.hardware.json --hardware --no-gripper
+```
+
+另一终端运行算法程序。`sim_algorithm.py` 的运动示例只允许模拟后端，不用于实机运动。
+
+**每次调用 `arm()` 或 `observe()` 前，把机械臂摆回约定固定启动姿态并保持静止；调用后会自动执行失能、设零及验证。** 归零不会自动把机械臂运动到固定姿态。
+
+### 六轴手动拖动观察
+
+```bash
+# 终端一：先停掉其他控制服务
+PYTHONPATH=src python3 -m mit_arm_control serve \
+  --config configs/arm.hardware.template.json --hardware --no-gripper --observe-only \
+  --joints J1 J2 J3 J4 J5 J6 --query-rate 400
+
+# 终端二：先摆好固定启动姿态
+PYTHONPATH=src python3 examples/sim_algorithm.py --observe --duration 30 --print-rate 1
+```
+
+`observe()` 返回后才开始手动拖动。观察模式始终不使能，不接收 `submit()`。观察模式的数据为电机角度坐标，不能直接当作算法模型坐标。
 
 ## 6. 读取状态与处理故障
 
