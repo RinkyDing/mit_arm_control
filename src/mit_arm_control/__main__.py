@@ -19,7 +19,10 @@ def main():
     parser.add_argument('--joints', nargs='+', help='observe-only: selected axes, default J1..J6')
     parser.add_argument('--query-rate', type=float, help='observe-only: target queries/s per axis, up to 1000')
     parser.add_argument('--no-gripper', action='store_true', help='use J1..J6 only')
+    parser.add_argument('--set-zero', action='store_true', help='serve: zero motors during arm/observe')
     args = parser.parse_args()
+    if args.set_zero and args.operation != 'serve':
+        parser.error('--set-zero requires serve')
     if (args.observe_only or args.joints or args.query_rate is not None) and (
             args.operation != 'serve' or not args.observe_only):
         parser.error('--joints/--query-rate require serve --observe-only')
@@ -51,7 +54,7 @@ def main():
                 os.close(fd)
         return 0
     run(c, args.socket, args.hardware, args.final_state,
-        observation_only=args.observe_only, joints=args.joints, query_rate=args.query_rate)
+        observation_only=args.observe_only, joints=args.joints, query_rate=args.query_rate, set_zero=args.set_zero)
     return 0
 
 

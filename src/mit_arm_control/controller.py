@@ -78,10 +78,11 @@ class Controller:
     ACTIVE = ('RUNNING', 'DEGRADED', 'OBSERVING')
 
     def __init__(self, config, backend, hardware=False, clock=time.monotonic,
-                 cancelled=lambda: False, publish=lambda: None, observation_only=False):
+                 cancelled=lambda: False, publish=lambda: None, observation_only=False, set_zero=False):
         self.config, self.backend, self.hardware, self.clock = config, backend, hardware, clock
         self.cancelled, self.publish = cancelled, publish
         self.observation_only = observation_only
+        self.set_zero = set_zero
         self.state, self.reason, self.stop_confirmed = 'IDLE', None, None
         self.command, self.previous_command = None, None
         self.last_seq = -1
@@ -131,7 +132,7 @@ class Controller:
                 return
         raise SafetyError('receive queue did not drain')
 
-    def fresh(self, status, zero=False, timeout=2.0):
+    def fresh(self, status, zero=False, timeout=2.0, stationary=True):
         # 排空旧数据，只接受本轮请求后的反馈，并核对状态、静止及可选零位。
         self.drain()
         before = dict(self.backend.rx_seq)
@@ -145,8 +146,8 @@ class Controller:
             if not pending:
                 for j in self.config['joints']:
                     f = self.backend.feedback[j['name']]
-                    if f['status'] != status or abs(f['dq']) > .1:
-                        raise SafetyError(f"{j['name']}: expected stationary status={status}")
+                    if f['status'] != status or (stationary and abs(f['dq']) > .1):
+                        raise SafetyError(f"{j['name']}: expected status={status}, stationary={stationary}")
                     if zero and abs(f['q']) > .02:
                         raise SafetyError(f"{j['name']}: zero mismatch")
                 return
@@ -222,12 +223,14 @@ class Controller:
         # 旧反馈可能按默认/上次量程解码，清除后重新取得反馈再验证静止和零位。
         self.backend.feedback.clear()
 
-    def _zero_disabled(self):
+    def _prepare_disabled(self):
         # 2. 全组失能，并连续验证静止后才能设置零点。
         self.disable()
         for _ in range(3):
             self.fresh(0)
             self.pause(.05)
+        if not self.set_zero:
+            return  # 保留电机现有零点，非零位置可以正常启动。
         # 3. 每轴只发送一次设零，再等待并多次验证反馈零位。
         for j in self.config['joints']:
             self.interrupt()
@@ -239,7 +242,7 @@ class Controller:
             self.pause(.05)
 
     def observe(self):
-        # 观察服务不能接收运动目标；每次归零复用正式 arm 的失能/静止/验证步骤。
+        # 观察服务不能接收运动目标；复用正式 arm 的失能/静止/验证步骤。
         if not self.observation_only or self.state != 'IDLE':
             raise SafetyError('observe requires an idle --observe-only service')
         self.reason, self.stop_confirmed = None, None
@@ -254,7 +257,7 @@ class Controller:
         self.transition('ARMING')
         try:
             self._read_ranges()
-            self._zero_disabled()
+            self._prepare_disabled()
             # 校准末尾有静止等待；运行阶段重新取样，不能把校准反馈当新样本。
             self.backend.feedback.clear()
             self.seen = dict(self.backend.rx_seq)
@@ -297,7 +300,7 @@ class Controller:
         self.transition('ARMING')
         try:
             self._read_ranges()
-            self._zero_disabled()
+            self._prepare_disabled()
             # 4. 写入并读回 MIT 模式；READY 阶段仍保持失能。
             for j in self.config['joints']:
                 self.backend.register(j, p.WRITE, 10, 1, interrupt=self.interrupt)
@@ -321,13 +324,8 @@ class Controller:
                 raise SafetyError('sequence not newer than previous command')
             validate_command(self.config, command, now, self.previous_command)
             if self.state == 'READY':
-                self.fresh(0, zero=True, timeout=self.config['feedback_timeout'])
+                self.fresh(0, zero=self.set_zero, timeout=self.config['feedback_timeout'])
                 check_feedback(self.config, self.backend.feedback, self.clock(), enabled=False)
-                # 首条目标须贴合当前静止零位；进入 RUNNING 后再逐步改变目标。
-                for j in self.config['joints']:
-                    t, f = command['joints'][j['name']], self.backend.feedback[j['name']]
-                    if abs(t['q_des']-f['q']) > .02 or abs(t['dq_des']) > .1 or abs(t['tau_ff']) > .1:
-                        raise SafetyError(f"{j['name']}: initial target must match stationary zero pose")
                 check_effort(self.config, command, self.backend.feedback)
                 for j in self.config['joints']:
                     self.interrupt()
@@ -337,7 +335,9 @@ class Controller:
                     self.backend.special(j, p.ENABLE)
                     self.backend.mit(j, command['joints'][j['name']])
                     self.poll(0)
-                self.fresh(1, zero=True, timeout=self.config['feedback_timeout'])
+                # 目标可以立即引起运动；使能后验证新反馈和通用限值，不要求静止/零位。
+                self.fresh(1, timeout=self.config['feedback_timeout'], stationary=False)
+                check_feedback(self.config, self.backend.feedback, self.clock())
                 validate_command(self.config, command, self.clock())
                 self.started = self.clock()
                 self.next_tick = self.started
@@ -498,6 +498,7 @@ class Controller:
             stop_confirmed=self.stop_confirmed,
             supported_only=False,
             observation_only=self.observation_only,
+            set_zero=self.set_zero,
             target_rate_hz=self.config['rate_hz'],
             stop_required=self.workspace_confirmed,
             backend='socketcan' if self.hardware else 'simulation',

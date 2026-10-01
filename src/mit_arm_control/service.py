@@ -43,7 +43,7 @@ def hardware_locks(config, commissioned=True):
 
 
 def run(config, socket_path, hardware=False, result_path=None, *,
-        observation_only=False, joints=None, query_rate=None):
+        observation_only=False, joints=None, query_rate=None, set_zero=False):
     # 默认模拟后端；实机需显式开启并完成配置，构造后端本身不会使能。
     if observation_only:
         rate = config['rate_hz'] if query_rate is None else query_rate
@@ -76,7 +76,7 @@ def run(config, socket_path, hardware=False, result_path=None, *,
             locks = hardware_locks(config, commissioned=not observation_only)
         backend = SocketCAN(config['joints']) if hardware else SimBackend(config['joints'])
         controller = Controller(config, backend, hardware, cancelled=mailbox.stop.is_set,
-                                publish=publish, observation_only=observation_only)
+                                publish=publish, observation_only=observation_only, set_zero=set_zero)
         publish()
         ipc = IPCServer(socket_path, mailbox, config)
         for sig in (signal.SIGINT, signal.SIGTERM):

@@ -66,12 +66,12 @@ class ArmClient:
         raise TimeoutError(f'waiting for {target}; inspect service state')
 
     def arm(self, *, timeout=15.):
-        # 每次启动均归零；返回 READY 后，首条有效静止目标才触发使能。
+        # 是否归零由服务 --set-zero 决定；返回 READY 后，首条有效目标才触发使能。
         ack = self._rpc('arm')
         return self._wait('READY', timeout, ack['ticket'])
 
     def observe(self, *, timeout=15.):
-        # 每次观察均先失能、校准零点并验证；观察期间不使能。
+        # 观察先失能并验证静止；服务 --set-zero 决定是否校准零点；观察期间不使能。
         ack = self._rpc('observe')
         return self._wait('OBSERVING', timeout, ack['ticket'])
 

@@ -155,5 +155,5 @@
       }
     }
   ],
-  "notes": "Motor coordinates only. Six-axis limits are provisional integration bounds, not measured mechanical limits or recommended gains. Gripper limits are unconfigured; use --no-gripper. Place the repeatable startup pose before arm()/observe()."
+  "notes": "Motor coordinates only. Six-axis limits are provisional integration bounds, not measured mechanical limits or recommended gains. Gripper limits are unconfigured; use --no-gripper. Keep motors stationary before arm()/observe(); a repeatable zero pose is needed only with --set-zero."
 }

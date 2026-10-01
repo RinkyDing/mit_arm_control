@@ -12,9 +12,13 @@ class SixAxisTests(unittest.TestCase):
         clock = core.Clock()
         bus = core.VirtualBus(config['joints'], clock)
         ctl = Controller(config, bus, clock=clock)
+        bus.state['J1']['q'] = .3
         ctl.arm()
+        self.assertAlmostEqual(bus.feedback['J1']['q'], .3)
+        self.assertFalse(any(code == 0xFE for _, code in bus.special_history))
         self.assertEqual(ctl.snapshot()['joint_names'], list(NAMES[:-1]))
         targets = {n: dict(q_des=0.,dq_des=0.,kp=2.,kd=.1,tau_ff=0.) for n in NAMES[:-1]}
+        targets['J1']['q_des'] = .3
         command = dict(seq=0,timestamp=clock(),joints=targets)
         ctl.submit(command)
         ctl.step()

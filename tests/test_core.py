@@ -60,7 +60,8 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(readiness(cfg, True))
         self.assertEqual(readiness(self.c, True), [])
 
-    def test_arm_always_zeros(self):
+    def test_arm_explicitly_zeros(self):
+        self.ctl.set_zero = True
         self.ctl.arm()
         self.assertEqual(sum(code == ZERO for _, code in self.bus.special_history), 7)
 
@@ -113,11 +114,32 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(self.ctl.state, 'FAULT')
                 self.assertTrue(self.ctl.stop_confirmed)
 
-    def test_initial_step_rejected_before_enable(self):
+    def test_initial_algorithm_target_accepted(self):
         self.ctl.arm()
-        cmd = self.cmd(); cmd['joints']['J1']['q_des'] = .3
+        cmd = self.cmd()
+        cmd['joints']['J1'].update(q_des=.3, dq_des=.5, tau_ff=.5)
+        self.ctl.submit(cmd)
+        self.assertEqual(self.ctl.state, 'RUNNING')
+        self.assertTrue(any(code == ENABLE for _, code in self.bus.special_history))
+
+    def test_initial_effort_limit_still_rejects_before_enable(self):
+        self.ctl.arm()
+        cmd = self.cmd()
+        cmd['joints']['J1'].update(q_des=1., kp=10.)
         with self.assertRaises(SafetyError): self.ctl.submit(cmd)
         self.assertFalse(any(code == ENABLE for _, code in self.bus.special_history))
+
+    def test_enable_feedback_can_be_moving_and_away_from_zero(self):
+        self.ctl.set_zero = True
+        self.ctl.arm()
+        original = self.bus.mit
+        def moving(joint, target):
+            original(joint, target)
+            if self.bus.state[joint['name']]['status'] == 1:
+                self.bus.state[joint['name']].update(q=.1, dq=.2)
+        self.bus.mit = moving
+        self.ctl.submit(self.cmd())
+        self.assertEqual(self.ctl.state, 'RUNNING')
 
     def test_feedback_limit_faults(self):
         for field, value in (('status',8),('q',1.1),('dq',3),('tau',3),('mos_temperature',80)):

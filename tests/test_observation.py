@@ -46,7 +46,15 @@ class ObservationTests(unittest.TestCase):
         self.assertTrue(self.ctl.stop_confirmed)
         self.assertFalse(any(code == ENABLE for _, code in self.bus.special_history))
 
+    def test_default_observation_preserves_position(self):
+        self.bus.state['J1']['q'] = .7
+        self.ctl.observe()
+        self.cycle(2)
+        self.assertAlmostEqual(self.bus.feedback['J1']['q'], .7)
+        self.assertFalse(any(code == ZERO for _, code in self.bus.special_history))
+
     def test_zero_shared_lifecycle_never_enables_or_changes_mode(self):
+        self.ctl.set_zero = True
         with patch.object(self.bus, 'register', wraps=self.bus.register) as register, \
              patch.object(self.bus, 'mit') as mit:
             self.ctl.observe()
@@ -61,6 +69,7 @@ class ObservationTests(unittest.TestCase):
         self.assertFalse(any(code == ENABLE for _, code in self.bus.special_history))
 
     def test_failed_zero(self):
+        self.ctl.set_zero = True
         self.bus.state['J3']['q'] = .5
         original = self.bus.special
         def ignore_zero(j, code):

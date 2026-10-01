@@ -20,8 +20,8 @@ Python 3.10+、Linux，无需 ROS。
 | --- | --- |
 | `ArmClient().connect()` | 连接服务；也可使用 `with ArmClient() as client:` 自动连接/关闭 |
 | `client.get_state()` | 返回最新状态字典，不等待下一份反馈，不触发归零或运动 |
-| `client.arm(timeout=15.)` | 每次归零、检查配置及模式；返回 `READY`，此时仍失能，首条有效静止目标才触发使能 |
-| `client.observe(timeout=15.)` | 仅用于观察服务；每次归零，返回 `OBSERVING`，电机保持失能 |
+| `client.arm(timeout=15.)` | 检查配置、失能和静止及模式；仅服务加 `--set-zero` 时置零；返回 `READY`，此时仍失能，首条有效目标才触发使能 |
+| `client.observe(timeout=15.)` | 仅用于观察服务；按服务 `--set-zero` 决定是否置零，返回 `OBSERVING`，电机保持失能 |
 | `client.submit(joints)` | 提交完整一组目标；返回服务接收确认，执行状态通过 `get_state()` 检查 |
 | `client.stop(timeout=4.)` | 停止并等待失能确认，返回状态；未确认会抛异常 |
 | `client.reset_fault(timeout=4.)` | 故障处理后显式复位，返回 `IDLE`；不会自动归零或恢复运动 |
@@ -47,7 +47,6 @@ Python 3.10+、Linux，无需 ROS。
 
 运动目标和反馈均使用电机协议坐标：服务只按实际量程解码，不做方向取反、零点偏移或减速比变换。算法自行处理模型坐标与电机坐标的转换。夹爪仍用驱动轴角度，不提供毫米开口或夹持力换算。配置范围和变化率限制由设备负责人提供，越界会拒绝并可能触发停止，不会静默截断。
 
-首条目标：位置接近归零后反馈（误差不超过 0.02 rad），速度和前馈力矩绝对值不超过 0.1，并满足配置限制。之后逐渐过渡到算法目标。
 
 算法建议先按约 200 Hz 更新目标。默认目标有效期 50 ms；算法计算或休眠不能长期阻断更新。服务保持最新有效目标，不自动插值，旧目标不会排队依次执行。
 
@@ -64,8 +63,8 @@ from your_algorithm import initial_targets, compute_targets
 
 with ArmClient() as client:
     try:
-        state = client.arm()  # 自动归零；调用前已摆好约定姿态
-        # 返回全部启用轴静止目标，位置使用 state['feedback'][name]['q']。
+        state = client.arm()  # 检查并准备；默认保留现有零点
+        # 返回全部启用轴的初始控制目标。
         client.submit(initial_targets(state))
         while True:
             state = client.get_state()
@@ -116,7 +115,9 @@ PYTHONPATH=src python3 -m mit_arm_control serve \
 
 另一终端运行算法程序。`sim_algorithm.py` 的运动示例只允许模拟后端，不用于实机运动。
 
-**每次调用 `arm()` 或 `observe()` 前，把机械臂摆回约定固定启动姿态并保持静止；调用后会自动执行失能、设零及验证。** 归零不会自动把机械臂运动到固定姿态。
+默认不置零，保留电机现有位置坐标。需要置零时，在上述服务命令末尾加 `--set-zero`；该选项对本服务会话中每次 `arm()` / `observe()` 生效，服务启动本身不操作电机。算法接口保持不变。
+
+仅启用 `--set-zero` 时，调用前需摆好约定固定姿态；无论是否置零，启动检查时都须保持静止。归零不会自动移动机械臂。
 
 ### 六轴手动拖动观察
 
@@ -126,7 +127,7 @@ PYTHONPATH=src python3 -m mit_arm_control serve \
   --config configs/arm.hardware.template.json --hardware --no-gripper --observe-only \
   --joints J1 J2 J3 J4 J5 J6 --query-rate 400
 
-# 终端二：先摆好固定启动姿态
+# 终端二：保持电机静止
 PYTHONPATH=src python3 examples/sim_algorithm.py --observe --duration 30 --print-rate 1
 ```
 
@@ -153,12 +154,12 @@ if f is not None:
 | `stop_confirmed` | `True` 已确认失能；`False` 未确认；`None` 尚未执行需确认的停止 |
 | `configuration_errors` | 尚未满足的运动配置条件 |
 
-缺少某轴反馈时不能自行补零。故障后停止算法更新，记录 `reason`；处理原因后调用 `reset_fault()`，重新摆好启动姿态，再 `arm()`。不要编写自动复位、自动恢复运动的无限重试循环。
+缺少某轴反馈时不能自行补零。故障后停止算法更新，记录 `reason`；处理原因后调用 `reset_fault()`，保持静止，再 `arm()`；若启用置零，先摆好约定姿态。不要编写自动复位、自动恢复运动的无限重试循环。
 
 ## 7. 启动与读取的区别
 
-`arm()` 是有副作用的启动操作：读参数并校验、确认失能和静止、设置并验证零点、确认控制模式；成功后返回 `READY`，首条有效静止目标才触发使能。每次工作调用一次，不放在算法循环中。
+`arm()` 是有副作用的启动操作：读参数并校验、确认失能和静止、按选项设置并验证零点、确认控制模式；成功后返回 `READY`，首条有效目标才触发使能。每次工作调用一次，不放在算法循环中。
 
 `get_state()` 只读取服务维护的最新快照，可以在算法循环中重复调用，不重新归零、不使能、不重新执行启动检查。
 
-默认服务支持运动接口，无额外实机验收开关；连接服务不会自动使能。`--observe-only` 仅用于测试，实机仍须显式指定 `--hardware`。每次 `arm()` / `observe()` 的电机设零行为保留，反馈角度以本次电机零点为基准。
+默认服务支持运动接口，无额外实机验收开关；连接服务不会自动使能。`--observe-only` 仅用于测试，实机仍须显式指定 `--hardware`。默认不修改电机零点；仅服务加 `--set-zero` 时在 `arm()` / `observe()` 期间设零，反馈以电机当前保存的零点为基准。
