@@ -19,11 +19,11 @@
         "dq_max": 10.0,
         "tau_max": 3.0,
         "kp_max": 50.0,
-        "kd_max": 0.15,
+        "kd_max": 1.0,
         "q_rate": 10.0,
         "dq_rate": 50.0,
         "kp_rate": 100.0,
-        "kd_rate": 2.0,
+        "kd_rate": 200.0,
         "tau_rate": 20.0,
         "temperature_max": 70.0
       }
@@ -40,11 +40,11 @@
         "dq_max": 10.0,
         "tau_max": 8.0,
         "kp_max": 50.0,
-        "kd_max": 0.7,
+        "kd_max": 1.0,
         "q_rate": 10.0,
         "dq_rate": 50.0,
         "kp_rate": 100.0,
-        "kd_rate": 2.0,
+        "kd_rate": 200.0,
         "tau_rate": 50.0,
         "temperature_max": 70.0
       }
@@ -61,11 +61,11 @@
         "dq_max": 10.0,
         "tau_max": 8.0,
         "kp_max": 50.0,
-        "kd_max": 0.7,
+        "kd_max": 1.0,
         "q_rate": 10.0,
         "dq_rate": 50.0,
         "kp_rate": 100.0,
-        "kd_rate": 2.0,
+        "kd_rate": 200.0,
         "tau_rate": 50.0,
         "temperature_max": 70.0
       }
@@ -82,11 +82,11 @@
         "dq_max": 10.0,
         "tau_max": 3.0,
         "kp_max": 50.0,
-        "kd_max": 0.7,
+        "kd_max": 1.0,
         "q_rate": 10.0,
         "dq_rate": 50.0,
         "kp_rate": 100.0,
-        "kd_rate": 2.0,
+        "kd_rate": 200.0,
         "tau_rate": 20.0,
         "temperature_max": 70.0
       }
@@ -103,11 +103,11 @@
         "dq_max": 10.0,
         "tau_max": 3.0,
         "kp_max": 50.0,
-        "kd_max": 0.7,
+        "kd_max": 1.0,
         "q_rate": 10.0,
         "dq_rate": 50.0,
         "kp_rate": 100.0,
-        "kd_rate": 2.0,
+        "kd_rate": 200.0,
         "tau_rate": 20.0,
         "temperature_max": 70.0
       }
@@ -124,11 +124,11 @@
         "dq_max": 10.0,
         "tau_max": 3.0,
         "kp_max": 50.0,
-        "kd_max": 0.7,
+        "kd_max": 1.0,
         "q_rate": 10.0,
         "dq_rate": 50.0,
         "kp_rate": 100.0,
-        "kd_rate": 2.0,
+        "kd_rate": 200.0,
         "tau_rate": 20.0,
         "temperature_max": 70.0
       }
@@ -145,11 +145,11 @@
         "dq_max": null,
         "tau_max": null,
         "kp_max": null,
-        "kd_max": null,
+        "kd_max": 1.0,
         "q_rate": null,
         "dq_rate": null,
         "kp_rate": null,
-        "kd_rate": null,
+        "kd_rate": 200.0,
         "tau_rate": null,
         "temperature_max": null
       }

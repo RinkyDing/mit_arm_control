@@ -23,7 +23,7 @@
         "q_rate": 2.0,
         "dq_rate": 5.0,
         "kp_rate": 50.0,
-        "kd_rate": 5.0,
+        "kd_rate": 200.0,
         "tau_rate": 5.0,
         "temperature_max": 70.0
       }
@@ -44,7 +44,7 @@
         "q_rate": 2.0,
         "dq_rate": 5.0,
         "kp_rate": 50.0,
-        "kd_rate": 5.0,
+        "kd_rate": 200.0,
         "tau_rate": 5.0,
         "temperature_max": 70.0
       }
@@ -65,7 +65,7 @@
         "q_rate": 2.0,
         "dq_rate": 5.0,
         "kp_rate": 50.0,
-        "kd_rate": 5.0,
+        "kd_rate": 200.0,
         "tau_rate": 5.0,
         "temperature_max": 70.0
       }
@@ -86,7 +86,7 @@
         "q_rate": 2.0,
         "dq_rate": 5.0,
         "kp_rate": 50.0,
-        "kd_rate": 5.0,
+        "kd_rate": 200.0,
         "tau_rate": 5.0,
         "temperature_max": 70.0
       }
@@ -107,7 +107,7 @@
         "q_rate": 2.0,
         "dq_rate": 5.0,
         "kp_rate": 50.0,
-        "kd_rate": 5.0,
+        "kd_rate": 200.0,
         "tau_rate": 5.0,
         "temperature_max": 70.0
       }
@@ -128,7 +128,7 @@
         "q_rate": 2.0,
         "dq_rate": 5.0,
         "kp_rate": 50.0,
-        "kd_rate": 5.0,
+        "kd_rate": 200.0,
         "tau_rate": 5.0,
         "temperature_max": 70.0
       }
@@ -149,7 +149,7 @@
         "q_rate": 2.0,
         "dq_rate": 5.0,
         "kp_rate": 50.0,
-        "kd_rate": 5.0,
+        "kd_rate": 200.0,
         "tau_rate": 5.0,
         "temperature_max": 70.0
       }
