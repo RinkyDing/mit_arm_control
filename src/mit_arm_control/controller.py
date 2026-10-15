@@ -83,6 +83,9 @@ class Controller:
         self.cancelled, self.publish = cancelled, publish
         self.observation_only = observation_only
         self.set_zero = set_zero
+        # 只调整周期发送顺序；配置、状态和算法目标仍以关节名称对应。
+        # 同一总线按回复 ID 升序，使发出命令的顺序与回复仲裁优先级一致。
+        self.send_joints = sorted(config['joints'], key=lambda j: (j['bus'], j['master_id']))
         self.state, self.reason, self.stop_confirmed = 'IDLE', None, None
         self.command, self.previous_command = None, None
         self.last_seq = -1
@@ -414,7 +417,7 @@ class Controller:
                     if self.state != 'DEGRADED':
                         self.transition('DEGRADED', 'feedback flow control')
                 else:
-                    for j in self.config['joints']:
+                    for j in self.send_joints:
                         self.interrupt()
                         try:
                             if self.observation_only:

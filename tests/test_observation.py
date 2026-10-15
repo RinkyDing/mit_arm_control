@@ -129,18 +129,18 @@ class ObservationTests(unittest.TestCase):
     def test_transient_queue_full_retries_without_counting_failed_send(self):
         self.ctl.observe()
         self.cycle(2)
-        before = self.ctl.metrics['J1'].tx
+        before = self.ctl.metrics['J5'].tx
         self.bus.send_error = True
         self.cycle(1)
         self.assertEqual(self.ctl.state, 'DEGRADED')
-        self.assertEqual(self.ctl.metrics['J1'].tx, before)
-        self.assertEqual(self.ctl.metrics['J1'].tx_queue_full, 1)
+        self.assertEqual(self.ctl.metrics['J5'].tx, before)
+        self.assertEqual(self.ctl.metrics['J5'].tx_queue_full, 1)
         self.bus.send_error = False
         self.cycle(5)
-        self.assertEqual(self.ctl.metrics['J1'].tx, before)
+        self.assertEqual(self.ctl.metrics['J5'].tx, before)
         self.cycle(20)
         self.assertEqual(self.ctl.state, 'OBSERVING')
-        self.assertGreater(self.ctl.metrics['J1'].tx, before)
+        self.assertGreater(self.ctl.metrics['J5'].tx, before)
 
     def test_non_transient_send_error_still_faults(self):
         self.ctl.observe()
