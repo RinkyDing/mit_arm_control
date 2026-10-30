@@ -1,4 +1,4 @@
-"""Pure DM MIT codec. See docs/PROVENANCE.md; no implicit clipping."""
+"""Pure DM MIT codec; no coordinate transforms or implicit clipping."""
 from dataclasses import dataclass
 import math
 import struct
@@ -39,19 +39,20 @@ def pack_mit(j, target, ranges=None):
     kd = quantize(target["kd"], 0, 5, 12)
     tau = quantize(target["tau_ff"], -t, t, 12)
     # 8 字节位布局：位置 16 位，其余速度、Kp、Kd、力矩各 12 位。
-    return Frame(
-        j["bus"], j["can_id"],
-        bytes((
-            q >> 8,
-            q & 255,
-            dq >> 4,
-            (dq & 15) << 4 | kp >> 8,
-            kp & 255,
-            kd >> 4,
-            (kd & 15) << 4 | tau >> 8,
-            tau & 255,
-        )),
-    )
+    data = bytes((
+        q >> 8,
+        q & 255,
+        dq >> 4,
+        (dq & 15) << 4 | kp >> 8,
+        kp & 255,
+        kd >> 4,
+        (kd & 15) << 4 | tau >> 8,
+        tau & 255,
+    ))
+    # 极端字段组合可能与特殊命令碰撞；运动目标不能变成清故障/使能/失能/置零。
+    if data[:7] == b'\xff'*7 and data[7] in (0xFB, ENABLE, DISABLE, ZERO):
+        raise ValueError("MIT payload collides with reserved special command")
+    return Frame(j["bus"], j["can_id"], data)
 
 
 def special(j, code):

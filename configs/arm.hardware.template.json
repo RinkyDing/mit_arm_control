@@ -11,149 +11,51 @@
       "name": "J1",
       "model": "4310_48V",
       "bus": "can0",
-      "can_id": 5,
-      "master_id": 21,
-      "limits": {
-        "q_min": -3.14159,
-        "q_max": 3.14159,
-        "dq_max": 10.0,
-        "tau_max": 3.0,
-        "kp_max": 50.0,
-        "kd_max": 1.0,
-        "q_rate": 10.0,
-        "dq_rate": 50.0,
-        "kp_rate": 100.0,
-        "kd_rate": 200.0,
-        "tau_rate": 20.0,
-        "temperature_max": 70.0
-      }
+      "can_id": 1,
+      "master_id": 17
     },
     {
       "name": "J2",
-      "model": "4340_48V",
+      "model": "8009_48V",
       "bus": "can0",
-      "can_id": 3,
-      "master_id": 19,
-      "limits": {
-        "q_min": -3.14159,
-        "q_max": 3.14159,
-        "dq_max": 10.0,
-        "tau_max": 8.0,
-        "kp_max": 50.0,
-        "kd_max": 1.0,
-        "q_rate": 10.0,
-        "dq_rate": 50.0,
-        "kp_rate": 100.0,
-        "kd_rate": 200.0,
-        "tau_rate": 50.0,
-        "temperature_max": 70.0
-      }
+      "can_id": 2,
+      "master_id": 18
     },
     {
       "name": "J3",
-      "model": "4340_48V",
+      "model": "4310_48V",
       "bus": "can0",
-      "can_id": 2,
-      "master_id": 18,
-      "limits": {
-        "q_min": -3.14159,
-        "q_max": 3.14159,
-        "dq_max": 10.0,
-        "tau_max": 8.0,
-        "kp_max": 50.0,
-        "kd_max": 1.0,
-        "q_rate": 10.0,
-        "dq_rate": 50.0,
-        "kp_rate": 100.0,
-        "kd_rate": 200.0,
-        "tau_rate": 50.0,
-        "temperature_max": 70.0
-      }
+      "can_id": 3,
+      "master_id": 19
     },
     {
       "name": "J4",
-      "model": "4310_48V",
+      "model": "3507_24V",
       "bus": "can0",
       "can_id": 4,
-      "master_id": 20,
-      "limits": {
-        "q_min": -3.14159,
-        "q_max": 3.14159,
-        "dq_max": 10.0,
-        "tau_max": 3.0,
-        "kp_max": 50.0,
-        "kd_max": 1.0,
-        "q_rate": 10.0,
-        "dq_rate": 50.0,
-        "kp_rate": 100.0,
-        "kd_rate": 200.0,
-        "tau_rate": 20.0,
-        "temperature_max": 70.0
-      }
+      "master_id": 20
     },
     {
       "name": "J5",
-      "model": "4310_48V",
+      "model": "3507_24V",
       "bus": "can0",
-      "can_id": 1,
-      "master_id": 17,
-      "limits": {
-        "q_min": -3.14159,
-        "q_max": 3.14159,
-        "dq_max": 10.0,
-        "tau_max": 3.0,
-        "kp_max": 50.0,
-        "kd_max": 1.0,
-        "q_rate": 10.0,
-        "dq_rate": 50.0,
-        "kp_rate": 100.0,
-        "kd_rate": 200.0,
-        "tau_rate": 20.0,
-        "temperature_max": 70.0
-      }
+      "can_id": 5,
+      "master_id": 21
     },
     {
       "name": "J6",
-      "model": "4310_48V",
+      "model": "3507_24V",
       "bus": "can0",
       "can_id": 6,
-      "master_id": 22,
-      "limits": {
-        "q_min": -3.14159,
-        "q_max": 3.14159,
-        "dq_max": 10.0,
-        "tau_max": 3.0,
-        "kp_max": 50.0,
-        "kd_max": 1.0,
-        "q_rate": 10.0,
-        "dq_rate": 50.0,
-        "kp_rate": 100.0,
-        "kd_rate": 200.0,
-        "tau_rate": 20.0,
-        "temperature_max": 70.0
-      }
+      "master_id": 22
     },
     {
       "name": "gripper",
-      "model": "4310_48V",
+      "model": "3507_24V",
       "bus": "can0",
       "can_id": 7,
-      "master_id": 23,
-      "limits": {
-        "q_min": null,
-        "q_max": null,
-        "dq_max": null,
-        "tau_max": null,
-        "kp_max": null,
-        "kd_max": 1.0,
-        "q_rate": null,
-        "dq_rate": null,
-        "kp_rate": null,
-        "kd_rate": 200.0,
-        "tau_rate": null,
-        "temperature_max": null
-      }
+      "master_id": 23
     }
   ],
-  "notes": "Motor coordinates only. Six-axis limits are provisional integration bounds, not measured mechanical limits or recommended gains. Gripper limits are unconfigured; use --no-gripper. Keep motors stationary before arm()/observe(); a repeatable zero pose is needed only with --set-zero."
+  "notes": "Motor coordinates only. Motion constraints belong to the algorithm. Runtime protocol ranges are read on every arm()/observe(). J7 is named gripper in the SDK; use --no-gripper when absent. CAN IDs 0x01-0x07 and Master IDs 0x11-0x17 follow J1-J7 order. Zero is preserved unless --set-zero is selected."
 }

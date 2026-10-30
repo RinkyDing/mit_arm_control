@@ -1,4 +1,4 @@
-"""Explicit robot configuration; no guessed hardware safety limits."""
+"""Bus/model configuration; motion constraints belong to the algorithm."""
 import json
 import math
 from pathlib import Path
@@ -6,9 +6,14 @@ from pathlib import Path
 # SDK 轴顺序固定；gripper 对应用户所称 J7。
 NAMES = ("J1", "J2", "J3", "J4", "J5", "J6", "gripper")
 # 电机协议量程 (位置 rad, 速度 rad/s, 力矩 N·m)，不等于机械安全限位。
-MODELS = {"4310_48V": (12.5, 50.0, 10.0), "4340_48V": (12.5, 20.0, 28.0)}
-LIMIT_KEYS = ("q_min", "q_max", "dq_max", "tau_max", "kp_max", "kd_max",
-              "q_rate", "dq_rate", "kp_rate", "kd_rate", "tau_rate", "temperature_max")
+MODELS = {
+    "4310_48V": (12.5, 50.0, 10.0),
+    "4340_48V": (12.5, 20.0, 28.0),
+    # Official dmBots motor-sdk DM8009 defaults; runtime reads override these.
+    "8009_48V": (12.5, 45.0, 54.0),
+    # DM-J3507-2EC V1.1 manual, p.15; actual ranges are read on every arm/observe.
+    "3507_24V": (12.566, 100.0, 5.0),
+}
 
 
 def finite(x):
@@ -25,8 +30,8 @@ def load_config(path, *, no_gripper=False):
     if [j.get("name") for j in c.get("joints", [])] != list(expected):
         raise ValueError("joints must be ordered " + ", ".join(expected))
     for j in c["joints"]:
-        if j.get("model") != ("4340_48V" if j["name"] in ("J2", "J3") else "4310_48V"):
-            raise ValueError(f"{j['name']}: unexpected robot model")
+        if j.get("model") not in MODELS:
+            raise ValueError(f"{j['name']}: unsupported motor model")
     for key, default in (("rate_hz", 1000), ("command_timeout", .05),
                          ("feedback_timeout", .05), ("stop_timeout", 2.0)):
         c.setdefault(key, default)
@@ -41,7 +46,7 @@ def load_config(path, *, no_gripper=False):
 
 
 def readiness(c, hardware=False, ranges=None):
-    # 汇总所有缺项供界面展示；未知方向、零位或限制不会被猜测填充。
+    # 汇总通信配置错误；不推断或检查机械运动限制。
     errors, ids = [], set()
     for j in c["joints"]:
         name = j["name"]
@@ -56,33 +61,18 @@ def readiness(c, hardware=False, ranges=None):
             ids.add(key)
         if not isinstance(j.get("bus"), str) or not j["bus"]:
             errors.append(f"{name}.bus missing")
-        lim = j.get("limits", {})
-        if any(not finite(lim.get(k)) for k in LIMIT_KEYS):
-            errors.append(f"{name}: incomplete limits")
-            continue
-        # 实机离线检查不知道电机量程；arm 读回后再检查能否容纳机械限制。
+        if "limits" in j:
+            errors.append(f"{name}: motion limits belong to the algorithm; remove legacy limits")
+        # 实机只使用读回的量程；离线检查不把型号默认值当实机确认值。
         actual_range = ranges.get(name) if ranges is not None else (
             None if hardware else MODELS[j["model"]]
         )
         if ranges is not None and actual_range is None:
             errors.append(f"{name}: missing runtime protocol range")
-        if not (lim["q_min"] <= 0 <= lim["q_max"] and lim["q_min"] < lim["q_max"]):
-            errors.append(f"{name}: position limits must include zero")
-        if actual_range is not None:
-            if (len(actual_range) != 3
-                    or any(not finite(value) or value <= 0 for value in actual_range)):
-                errors.append(f"{name}: invalid protocol range")
-            else:
-                p, v, t = actual_range
-                if not (-p+.1 <= lim["q_min"] and lim["q_max"] <= p-.1
-                        and lim["dq_max"] <= v and lim["tau_max"] <= t):
-                    errors.append(f"{name}: configured limits exceed protocol range or wrap margin")
-        if not (0 < lim["dq_max"] and 0 < lim["tau_max"]
-                and 0 < lim["kp_max"] <= 500 and 0 < lim["kd_max"] <= 5
-                and 0 < lim["temperature_max"] <= 100):
-            errors.append(f"{name}: invalid physical/gain limits")
-        if any(lim[k] <= 0 for k in ("q_rate", "dq_rate", "kp_rate", "kd_rate", "tau_rate")):
-            errors.append(f"{name}: command rate limits must be positive")
+        if actual_range is not None and (
+                len(actual_range) != 3
+                or any(not finite(value) or value <= 0 for value in actual_range)):
+            errors.append(f"{name}: invalid protocol range")
     return errors
 
 

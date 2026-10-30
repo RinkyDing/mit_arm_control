@@ -71,7 +71,7 @@ class ArmClient:
         return self._wait('READY', timeout, ack['ticket'])
 
     def observe(self, *, timeout=15.):
-        # 观察先失能并验证静止；服务 --set-zero 决定是否校准零点；观察期间不使能。
+        # 观察先失能并验证状态；服务 --set-zero 决定是否校准零点；观察期间不使能。
         ack = self._rpc('observe')
         return self._wait('OBSERVING', timeout, ack['ticket'])
 

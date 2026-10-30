@@ -55,10 +55,17 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(self.bus.sent, 0)
         self.assertEqual(self.ctl.state, 'IDLE')
 
-    def test_hardware_template_incomplete(self):
-        cfg = load_config(ROOT/'configs/arm.hardware.template.json')
-        self.assertTrue(readiness(cfg, True))
-        self.assertEqual(readiness(self.c, True), [])
+    def test_models_and_communication_config(self):
+        for file in ('arm.hardware.template.json', 'simulation.json'):
+            cfg = load_config(ROOT/'configs'/file)
+            self.assertEqual(readiness(cfg, True), [])
+            self.assertEqual([j['model'] for j in cfg['joints']],
+                             ['4310_48V', '8009_48V', '4310_48V']+['3507_24V']*4)
+            self.assertEqual([j['can_id'] for j in cfg['joints']], list(range(1, 8)))
+            self.assertEqual([j['master_id'] for j in cfg['joints']], list(range(0x11, 0x18)))
+        cfg['joints'][0]['limits'] = {'q_min': -1}
+        self.assertIn('remove legacy limits', '; '.join(readiness(cfg)))
+
 
     def test_arm_explicitly_zeros(self):
         self.ctl.set_zero = True
@@ -98,7 +105,7 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(self.ctl.stop_confirmed)
 
     def test_invalid_commands_stop_group(self):
-        for kind in ('missing', 'nan', 'old', 'limit', 'slew', 'future'):
+        for kind in ('missing', 'nan', 'old', 'limit', 'future'):
             with self.subTest(kind=kind):
                 self.setUp(); self.start()
                 cmd = self.cmd()
@@ -107,8 +114,7 @@ class CoreTests(unittest.TestCase):
                 if kind == 'missing': del cmd['joints']['J2']
                 if kind == 'nan': cmd['joints']['J1']['kp'] = float('nan')
                 if kind == 'old': cmd['seq'] = 0
-                if kind == 'limit': cmd['joints']['J1']['dq_des'] = 20
-                if kind == 'slew': cmd['joints']['J1']['q_des'] = .5
+                if kind == 'limit': cmd['joints']['J1']['dq_des'] = 51
                 if kind == 'future': cmd['timestamp'] += 10
                 with self.assertRaises(SafetyError): self.ctl.submit(cmd)
                 self.assertEqual(self.ctl.state, 'FAULT')
@@ -122,12 +128,19 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(self.ctl.state, 'RUNNING')
         self.assertTrue(any(code == ENABLE for _, code in self.bus.special_history))
 
-    def test_initial_effort_limit_still_rejects_before_enable(self):
+    def test_motion_constraints_and_slew_belong_to_algorithm(self):
         self.ctl.arm()
         cmd = self.cmd()
-        cmd['joints']['J1'].update(q_des=1., kp=10.)
-        with self.assertRaises(SafetyError): self.ctl.submit(cmd)
-        self.assertFalse(any(code == ENABLE for _, code in self.bus.special_history))
+        # 超过旧位置/速度/力矩/增益限制，且估算力矩远超旧 tau_max。
+        cmd['joints']['J1'].update(q_des=4., dq_des=20., kp=100., kd=2., tau_ff=6.)
+        self.ctl.submit(cmd)
+        self.clock.now += .001
+        cmd = self.cmd()
+        cmd['joints']['J1'].update(q_des=-4., dq_des=-20., kp=200., kd=3., tau_ff=-6.)
+        self.ctl.submit(cmd)
+        self.ctl.step()
+        self.assertEqual(self.ctl.state, 'RUNNING')
+
 
     def test_enable_feedback_can_be_moving_and_away_from_zero(self):
         self.ctl.set_zero = True
@@ -141,21 +154,33 @@ class CoreTests(unittest.TestCase):
         self.ctl.submit(self.cmd())
         self.assertEqual(self.ctl.state, 'RUNNING')
 
-    def test_feedback_limit_faults(self):
-        for field, value in (('status',8),('q',1.1),('dq',3),('tau',3),('mos_temperature',80)):
+    def test_feedback_status_and_invalid_numbers_still_fault(self):
+        for field, value in (('status',8),('q',float('nan')),('dq',float('inf')),
+                             ('tau',float('-inf')),('mos_temperature',float('nan'))):
             with self.subTest(field=field):
                 self.setUp(); self.start()
                 self.bus.feedback['J1'][field] = value
                 self.ctl.step()
                 self.assertEqual(self.ctl.state, 'FAULT')
 
-    def test_actual_effort_checked_even_with_valid_individual_fields(self):
+
+    def test_feedback_motion_and_temperature_are_telemetry(self):
         self.start()
-        self.bus.feedback['J1']['q'] = -1.
-        self.ctl.command['joints']['J1']['kp'] = 10.
+        self.bus.feedback['J1'].update(q=-4., dq=20., tau=8., mos_temperature=80.)
+        self.ctl.command['joints']['J1']['kp'] = 100.
         self.ctl.step()
-        self.assertEqual(self.ctl.state, 'FAULT')
-        self.assertIn('estimated MIT torque', self.ctl.reason)
+        self.assertEqual(self.ctl.state, 'RUNNING')
+
+    def test_no_stationary_motion_gate(self):
+        original = self.bus.refresh
+        def moving(joint):
+            self.bus.state[joint['name']]['dq'] = .2
+            original(joint)
+        self.bus.refresh = moving
+        self.ctl.arm()
+        self.ctl.submit(self.cmd())
+        self.assertEqual(self.ctl.state, 'RUNNING')
+
 
     def test_isolated_drops_do_not_stall_forever(self):
         self.start()

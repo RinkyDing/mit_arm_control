@@ -117,7 +117,9 @@ class IPCServer:
                 raise ValueError('submit requires READY/RUNNING/DEGRADED')
             cmd = msg.get('command')
             try:
-                validate_command(self.config, cmd, time.monotonic(), self.previous)
+                ranges = {name: (r['pmax'], r['vmax'], r['tmax'])
+                          for name, r in self.mailbox.snapshot.get('protocol_ranges', {}).items()}
+                validate_command(self.config, cmd, time.monotonic(), self.previous, ranges=ranges)
             except (ValueError, TypeError, KeyError) as exc:
                 self.mailbox.request_stop(f'invalid algorithm command: {exc}', fault=True)
                 raise

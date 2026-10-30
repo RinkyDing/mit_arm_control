@@ -5,7 +5,7 @@ import errno
 import time
 from . import protocol as p
 from .config import readiness, finite
-from .safety import SafetyError, validate_command, check_feedback, check_effort
+from .safety import SafetyError, validate_command, check_feedback
 
 
 # 每轴统计；计数差只用于观察，不用于判断是否可以继续发送。
@@ -135,8 +135,8 @@ class Controller:
                 return
         raise SafetyError('receive queue did not drain')
 
-    def fresh(self, status, zero=False, timeout=2.0, stationary=True):
-        # 排空旧数据，只接受本轮请求后的反馈，并核对状态、静止及可选零位。
+    def fresh(self, status, zero=False, timeout=2.0):
+        # 排空旧数据，只接受本轮请求后的反馈，并核对驱动状态及可选零位。
         self.drain()
         before = dict(self.backend.rx_seq)
         requested_after = self.clock()
@@ -149,8 +149,8 @@ class Controller:
             if not pending:
                 for j in self.config['joints']:
                     f = self.backend.feedback[j['name']]
-                    if f['status'] != status or (stationary and abs(f['dq']) > .1):
-                        raise SafetyError(f"{j['name']}: expected status={status}, stationary={stationary}")
+                    if f['status'] != status:
+                        raise SafetyError(f"{j['name']}: expected status={status}")
                     if zero and abs(f['q']) > .02:
                         raise SafetyError(f"{j['name']}: zero mismatch")
                 return
@@ -206,8 +206,8 @@ class Controller:
             raise SafetyError(f"STOP UNCONFIRMED: {list(pending)}; last I/O error={last_error}")
 
     def _read_ranges(self):
-        # 1. 逐轴读回实际协议量程；全部有效且能容纳机械限制后才统一生效。
-        # 只改变本次会话的编解码量程，不写量程寄存器、不覆盖 JSON 或机械限制。
+        # 1. 逐轴读回实际协议量程；全部有效后才统一生效。
+        # 只改变本次会话的编解码量程，不写量程寄存器、不覆盖 JSON。
         pending_ranges = {}
         for j in self.config['joints']:
             values = []
@@ -223,11 +223,11 @@ class Controller:
                 raise SafetyError('; '.join(errors))
         self.backend.protocol_ranges = dict(pending_ranges)
         self.protocol_ranges = dict(pending_ranges)
-        # 旧反馈可能按默认/上次量程解码，清除后重新取得反馈再验证静止和零位。
+        # 旧反馈可能按默认/上次量程解码，清除后重新取得反馈再验证状态和可选零位。
         self.backend.feedback.clear()
 
     def _prepare_disabled(self):
-        # 2. 全组失能，并连续验证静止后才能设置零点。
+        # 2. 全组失能，并连续验证失能状态后按选项设置零点。
         self.disable()
         for _ in range(3):
             self.fresh(0)
@@ -245,7 +245,7 @@ class Controller:
             self.pause(.05)
 
     def observe(self):
-        # 观察服务不能接收运动目标；复用正式 arm 的失能/静止/验证步骤。
+        # 观察服务不能接收运动目标；复用正式 arm 的失能/验证步骤。
         if not self.observation_only or self.state != 'IDLE':
             raise SafetyError('observe requires an idle --observe-only service')
         self.reason, self.stop_confirmed = None, None
@@ -261,7 +261,7 @@ class Controller:
         try:
             self._read_ranges()
             self._prepare_disabled()
-            # 校准末尾有静止等待；运行阶段重新取样，不能把校准反馈当新样本。
+            # 初始化末尾有等待；运行阶段重新取样，不能把校准反馈当新样本。
             self.backend.feedback.clear()
             self.seen = dict(self.backend.rx_seq)
             self.started = self.next_tick = self.clock()
@@ -325,23 +325,23 @@ class Controller:
             now = self.clock()
             if command.get('seq', -1) <= self.last_seq:
                 raise SafetyError('sequence not newer than previous command')
-            validate_command(self.config, command, now, self.previous_command)
+            validate_command(self.config, command, now, self.previous_command,
+                             ranges=self.protocol_ranges)
             if self.state == 'READY':
                 self.fresh(0, zero=self.set_zero, timeout=self.config['feedback_timeout'])
                 check_feedback(self.config, self.backend.feedback, self.clock(), enabled=False)
-                check_effort(self.config, command, self.backend.feedback)
                 for j in self.config['joints']:
                     self.interrupt()
-                    validate_command(self.config, command, self.clock())
+                    validate_command(self.config, command, self.clock(), ranges=self.protocol_ranges)
                     # 失能时覆盖旧目标；使能后立即重发同一个已验证目标。
                     self.backend.mit(j, command['joints'][j['name']])
                     self.backend.special(j, p.ENABLE)
                     self.backend.mit(j, command['joints'][j['name']])
                     self.poll(0)
-                # 目标可以立即引起运动；使能后验证新反馈和通用限值，不要求静止/零位。
-                self.fresh(1, timeout=self.config['feedback_timeout'], stationary=False)
+                # 目标可以立即引起运动；使能后验证新反馈及驱动状态，不检查运动边界。
+                self.fresh(1, timeout=self.config['feedback_timeout'])
                 check_feedback(self.config, self.backend.feedback, self.clock())
-                validate_command(self.config, command, self.clock())
+                validate_command(self.config, command, self.clock(), ranges=self.protocol_ranges)
                 self.started = self.clock()
                 self.next_tick = self.started
                 self.seen = dict(self.backend.rx_seq)
@@ -394,7 +394,6 @@ class Controller:
                 if not self.command or now-self.command['timestamp'] >= self.config['command_timeout']:
                     raise SafetyError('algorithm command expired')
                 check_feedback(self.config, self.backend.feedback, now)
-                check_effort(self.config, self.command, self.backend.feedback)
             if (self.tx_congested_since is not None
                     and now - self.tx_congested_since >= self.config['feedback_timeout']):
                 raise SafetyError('transmit congestion timeout')
