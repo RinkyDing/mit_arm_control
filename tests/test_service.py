@@ -65,6 +65,7 @@ class ServiceTests(unittest.TestCase):
         report=json.loads(Path(self.result).read_text())
         self.assertTrue(report['stop_confirmed'])
         self.assertEqual(set(report['metrics']),set(NAMES))
+        self.assertLessEqual(report['metrics_timestamp'],report['timestamp'])
 
     def test_owner_observer_and_algorithm_disconnect(self):
         with ArmClient(self.path) as client, ArmClient(self.path,'observer') as observer:

@@ -56,6 +56,7 @@ def run(config, socket_path, hardware=False, result_path=None, *,
         raise ValueError('; '.join(errors))
     locks, backend, ipc = [], None, None
     mailbox, logger = Mailbox(), AsyncLogger()
+    feedback_revision = -1
     exiting = False
     controller = None
     old_signals = {}
@@ -66,10 +67,15 @@ def run(config, socket_path, hardware=False, result_path=None, *,
         exiting = True
         mailbox.request_stop(f'service signal {signum}')
 
-    def publish():
+    def publish(statistics=False):
+        nonlocal feedback_revision
         if controller is not None:
-            mailbox.snapshot = dict(controller.snapshot(),
-                                    log_dropped=logger.dropped, log_failures=logger.failures)
+            # 状态/目标更新立即可见；完整直方图仅定时或生命周期完成后计算。
+            snapshot = controller.snapshot(statistics=statistics)
+            mailbox.snapshot = dict(mailbox.snapshot, **snapshot,
+                log_dropped=logger.dropped, log_failures=logger.failures,
+                feedback_snapshot_timestamp=snapshot['timestamp'])
+            feedback_revision = backend.feedback_revision
 
     try:
         if hardware:
@@ -77,7 +83,7 @@ def run(config, socket_path, hardware=False, result_path=None, *,
         backend = SocketCAN(config['joints']) if hardware else SimBackend(config['joints'])
         controller = Controller(config, backend, hardware, cancelled=mailbox.stop.is_set,
                                 publish=publish, observation_only=observation_only, set_zero=set_zero)
-        publish()
+        publish(statistics=True)
         ipc = IPCServer(socket_path, mailbox, config)
         for sig in (signal.SIGINT, signal.SIGTERM):
             old_signals[sig] = signal.signal(sig, request_exit)
@@ -98,7 +104,7 @@ def run(config, socket_path, hardware=False, result_path=None, *,
                 mailbox.stop_ticket = 0
                 mailbox.stop.clear()
                 mailbox.fault = False
-                publish()
+                publish(statistics=True)
             else:
                 try:
                     op, args, ticket = mailbox.actions.get_nowait()
@@ -116,7 +122,7 @@ def run(config, socket_path, hardware=False, result_path=None, *,
                     except Exception as exc:
                         mailbox.last_error = str(exc)
                     mailbox.completed_ticket = ticket
-                    publish()
+                    publish(statistics=True)
                 command = mailbox.take_command()
                 if command is not None and not mailbox.stop.is_set():
                     try:
@@ -125,26 +131,30 @@ def run(config, socket_path, hardware=False, result_path=None, *,
                         mailbox.last_error = str(exc)
                     publish()
                 controller.step()
-                # 每轮仅更新轻量反馈；完整统计降低发布频率，日志写入另在线程执行。
-                mailbox.snapshot = dict(mailbox.snapshot,
-                    feedback={n: dict(f) for n, f in backend.feedback.items()},
-                    feedback_snapshot_timestamp=time.monotonic())
+                # 无新反馈时不复制整组字典；帧时间戳和 get_state 的年龄仍独立更新。
+                if backend.feedback_revision != feedback_revision:
+                    mailbox.snapshot = dict(mailbox.snapshot,
+                        feedback={n: dict(f) for n, f in backend.feedback.items()},
+                        feedback_snapshot_timestamp=time.monotonic())
+                    feedback_revision = backend.feedback_revision
             now = time.monotonic()
             if now >= next_snapshot:
-                publish()
-                next_snapshot = now+.02
+                publish(statistics=True)
+                next_snapshot = time.monotonic()+.02
             if now >= next_log:
                 logger.offer(mailbox.snapshot)
                 next_log = now+1.
-            remaining = controller.next_tick-now if controller.state in controller.ACTIVE else .001
-            time.sleep(max(0., min(.0002, remaining)))
+            # 发布开销也占用调度时间；用当前时间重新算剩余量，避免多睡一段。
+            remaining = controller.next_tick-time.monotonic() if controller.state in controller.ACTIVE else .001
+            if remaining > 0 and not mailbox.stop.is_set():
+                backend.wait(min(.0002, remaining))
     finally:
         # 先停止电机，再关闭 IPC/日志并写磁盘。
         # 可捕获异常也会到这里；SIGKILL 或掉电无法执行 finally。
         if controller is not None:
             if controller.state not in ('IDLE',) or controller.stop_confirmed is False:
                 controller.stop('service exit', fault=controller.state == 'FAULT')
-            publish()
+            publish(statistics=True)
         if ipc:
             ipc.close()
         if backend:

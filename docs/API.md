@@ -150,7 +150,7 @@ if f is not None:
 | 字段 | 含义 |
 | --- | --- |
 | `state` | `IDLE` 待启动；`ARMING` 初始化；`READY` 等初始目标；`RUNNING` 运行；`OBSERVING` 观察；`DEGRADED` 降级；`STOPPING` 停止中；`FAULT` 故障锁存 |
-| `reason` | 最近状态原因；当前是否故障以 `state` 判断 |
+| `reason` | 当前状态原因；恢复运行后清除，历史状态变化保留在 `events` 中 |
 | `feedback[name].q / dq / tau` | 位置、速度、反馈估计力矩；力矩不是外力传感器读数 |
 | `feedback[name].timestamp / age_ms` | 样本时间与年龄；连续读取可能得到同一份样本，各轴不是严格同步采样 |
 | `feedback[name].mos_temperature / rotor_temperature` | 驱动及电机温度，℃ |
@@ -158,8 +158,20 @@ if f is not None:
 | `stop_confirmed` | `True` 已确认失能；`False` 未确认；`None` 尚未执行需确认的停止 |
 | `protocol_ranges[name].pmax / vmax / tmax` | 本次启动读回的编解码量程；启动成功前可能为空 |
 | `configuration_errors` | 尚未满足的通信配置／协议量程条件 |
+| `metrics_timestamp` | 完整统计的单调时钟时间；与各轴反馈时间分别更新 |
+| `transport[bus]` | 实机 socket 自创建以来的总线错误、接收队列丢包计数；与完整统计一起更新，模拟后端为空 |
 
 缺少某轴反馈时不能自行补零。故障后停止算法更新，记录 `reason`；处理原因后调用 `reset_fault()`，再 `arm()`；若启用置零，先摆好约定姿态。不要编写自动复位、自动恢复运动的无限重试循环。
+
+有新反馈时更新反馈快照，没有新帧时复用已有数据；目标序号和状态变化立即发布；完整统计在运行时约每 20 ms 更新，生命周期操作结束及退出时额外刷新。`get_state()` 不触发统计计算或 CAN 查询。`metrics` 的频率是本次运行以来的累计平均值，并非最近一秒的频率；它可能比反馈和当前状态稍旧。
+
+`skipped` 是调度跳过的周期数，`backpressure` 是流控阻止发送的次数，均不等于 CAN 丢帧数。`tx_queue_full` 统计该轴发送遇到 `ENOBUFS/EAGAIN/EWOULDBLOCK` 的次数。队列满时结束本轮发送，设置一个配置周期（不超过反馈探测间隔）的退避门限，之后在下个调度点重试最新目标；不补发历史目标。连续缺反馈仍按 `min(20 ms, feedback_timeout/4)` 间隔探测。持续发送拥塞和反馈超时仍会触发停止，不因降低实际发送频率而延长超时。
+
+实机后端在内核中过滤配置的标准 Master ID，并额外接收状态类 CAN 错误帧。`transport[bus]` 包括 `error_frames`、`bus_off`、`ack_errors`、`controller_errors`、`tx_timeouts`、`restarted`、`rx_queue_dropped`、`last_error_classes`、`last_error_timestamp`。这些总线计数不能解释成某一轴的丢帧数；错误帧和参数回复均不刷新运动反馈有效期。`last_error_timestamp` 是错误被软件处理的时间，不是线缆事件时间。`rx_queue_dropped` 是 Linux 提供的该 socket 累计 uint32 接收溢出数，可回绕；无后续报文到达时也可能尚未收到最新计数。计数为零不能证明物理线路无错误，错误报告依赖驱动和适配器，且服务未订阅每次位错误。
+
+服务保持运行期间 200 μs 的单次等待上限，CAN 到帧可以提前唤醒；该值不是实时保证。收发仍由同一个 CAN 所有者处理，尚未拆成独立收发线程。同一目标的 MIT 帧可复用已验证编码，目标数值、路由或运行时量程变化都会重新编码；目标过期检查仍在每次发送前执行。
+
+七轴 500 Hz 可通过观察服务的 `--joints J1 J2 J3 J4 J5 J6 gripper --query-rate 500` 测试。该值是调度目标，不是已保证的硬件吞吐量；需逐轴检查 TX/RX、跳周期、反馈间隔及停止确认。观察模式测试不能代替使能后的 MIT 控制验收。
 
 ## 7. 启动与读取的区别
 

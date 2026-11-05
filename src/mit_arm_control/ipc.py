@@ -98,9 +98,10 @@ class IPCServer:
         if op == 'get_state':
             # 控制循环整份替换快照；读取时重新计算反馈年龄，不冒充新采样。
             snap = self.mailbox.snapshot
+            now = time.monotonic()
             return dict(snap, last_request_error=self.mailbox.last_error,
                         completed_ticket=self.mailbox.completed_ticket,
-                        feedback={n: dict(f, age_ms=(time.monotonic()-f['timestamp'])*1000)
+                        feedback={n: dict(f, age_ms=(now-f['timestamp'])*1000)
                                   for n, f in snap.get('feedback', {}).items()})
         if self.owner is not client:
             raise ValueError('observer has no motor-control permission')
@@ -211,6 +212,11 @@ def format_telemetry(snapshot):
             f"late95/99/max={m['lateness_p95_ms']:.2f}/"
             f"{m['lateness_p99_ms']:.2f}/{m['lateness_max_ms']:.2f}ms "
             + feedback)
+    for bus, counters in snapshot.get('transport', {}).items():
+        if counters['error_frames'] or counters['rx_queue_dropped']:
+            lines.append(f"  {bus}: CAN_errors={counters['error_frames']} "
+                         f"bus_off={counters['bus_off']} ack_errors={counters['ack_errors']} "
+                         f"rx_queue_dropped={counters['rx_queue_dropped']}")
     return '\n'.join(lines)
 
 

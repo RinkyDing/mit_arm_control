@@ -4,6 +4,7 @@ from pathlib import Path
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from mit_arm_control.backend import SimBackend
 from mit_arm_control.config import load_config, readiness, NAMES
 from mit_arm_control.controller import Controller
@@ -54,6 +55,26 @@ class CoreTests(unittest.TestCase):
     def test_constructor_and_import_have_no_motor_writes(self):
         self.assertEqual(self.bus.sent, 0)
         self.assertEqual(self.ctl.state, 'IDLE')
+
+    def test_light_snapshot_exposes_state_without_scanning_statistics(self):
+        self.start()
+        metric = self.ctl.metrics['J1']
+        with patch.object(metric, 'snapshot', side_effect=AssertionError('heavy statistics')):
+            state = self.ctl.snapshot(statistics=False)
+        self.assertEqual(state['last_seq'], self.seq)
+        self.assertEqual(state['state'], 'RUNNING')
+        self.assertEqual(state['protocol_ranges']['J1']['vmax'], 50.)
+        self.assertEqual(set(state['feedback']), set(NAMES))
+        self.assertNotIn('metrics', state)
+
+    def test_quantiles_include_overflow_and_do_not_exceed_maximum(self):
+        m = self.ctl.metrics['J1']
+        for i in range(100):
+            m.sent(10.+(.025 if i>=95 else .001234),10.,False)
+        result=m.snapshot(1.)
+        self.assertAlmostEqual(result['lateness_p95_ms'],1.24)
+        self.assertAlmostEqual(result['lateness_p99_ms'],25.)
+        self.assertLessEqual(result['lateness_p99_ms'],result['lateness_max_ms'])
 
     def test_models_and_communication_config(self):
         for file in ('arm.hardware.template.json', 'simulation.json'):

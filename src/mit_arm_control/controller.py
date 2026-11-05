@@ -44,17 +44,20 @@ class Metrics:
         self.rx += 1
         self.unobserved = 0
 
-    def percentile(self, fraction):
-        threshold, count = math.ceil(self.tx*fraction), 0
-        if not threshold:
-            return 0.
-        for i, n in enumerate(self.histogram):
-            count += n
-            if count >= threshold:
-                return (i+1)*.00001 if i < 2001 else self.max_lateness
-        return self.max_lateness
-
     def snapshot(self, elapsed):
+        # 两个分位数共用一次扫描；桶上界不应超过实际最大值。
+        thresholds = [math.ceil(self.tx*f) for f in (.95, .99)]
+        percentiles = [0., 0.]
+        count, index = 0, 0
+        if self.tx:
+            for bucket, n in enumerate(self.histogram):
+                count += n
+                while index < 2 and count >= thresholds[index]:
+                    value = (bucket+1)*.00001 if bucket < 2001 else self.max_lateness
+                    percentiles[index] = min(value, self.max_lateness)
+                    index += 1
+                if index == 2:
+                    break
         return dict(
             tx=self.tx,
             rx=self.rx,
@@ -67,8 +70,8 @@ class Metrics:
             tx_queue_full=self.tx_queue_full,
             max_tx_gap_ms=self.max_tx_gap * 1000,
             max_rx_gap_ms=self.max_rx_gap * 1000,
-            lateness_p95_ms=self.percentile(.95) * 1000,
-            lateness_p99_ms=self.percentile(.99) * 1000,
+            lateness_p95_ms=percentiles[0] * 1000,
+            lateness_p99_ms=percentiles[1] * 1000,
             lateness_max_ms=self.max_lateness * 1000,
         )
 
@@ -106,9 +109,8 @@ class Controller:
 
     def transition(self, state, reason=None):
         self.state = state
-        if reason is not None:
-            reason = str(reason)[:512]
-            self.reason = reason
+        reason = str(reason)[:512] if reason is not None else None
+        self.reason = reason
         self.events.append(dict(timestamp=self.clock(), state=state, reason=reason))
         self.events = self.events[-32:]
         try:
@@ -122,11 +124,12 @@ class Controller:
 
     def poll(self, timeout=0):
         result = self.backend.poll(timeout)
-        for name, count in self.backend.rx_seq.items():
-            if count != self.seen[name]:
-                self.seen[name] = count
-                if self.state in self.ACTIVE:
-                    self.metrics[name].received(self.backend.feedback[name]['timestamp'])
+        # 后端每次最多处理一帧，直接报告更新轴；空读/参数帧不遍历所有轴。
+        name = self.backend.last_feedback_name
+        if name is not None:
+            self.seen[name] = self.backend.rx_seq[name]
+            if self.state in self.ACTIVE:
+                self.metrics[name].received(self.backend.feedback[name]['timestamp'])
         return result
 
     def drain(self):
@@ -433,7 +436,9 @@ class Controller:
                             self.metrics[j['name']].backpressure += 1
                             if self.tx_congested_since is None:
                                 self.tx_congested_since = self.clock()
-                            self.tx_retry_after = self.clock() + retry
+                            # 队列满的退避门限为一个发送周期，之后在调度点重试。
+                            # 无反馈仍保留较长的探测间隔。
+                            self.tx_retry_after = self.clock() + min(period, retry)
                             self.transition('DEGRADED', 'transmit queue backpressure')
                             break
                         self.metrics[j['name']].sent(self.clock(), deadline,
@@ -488,11 +493,11 @@ class Controller:
         self.reason, self.command, self.previous_command = None, None, None
         self.transition('IDLE')
 
-    def snapshot(self):
+    def snapshot(self, *, statistics=True):
         now = self.clock()
         elapsed = max(0., (self.finished if self.finished is not None else now)-(self.started or now))
         feedback = {name: dict(f, age_ms=(now-f['timestamp'])*1000) for name, f in self.backend.feedback.items()}
-        return dict(
+        result = dict(
             version=1,
             joint_names=[j['name'] for j in self.config['joints']],
             state=self.state,
@@ -515,9 +520,15 @@ class Controller:
                 for name, values in self.protocol_ranges.items()
             },
             feedback=feedback,
-            metrics={n: m.snapshot(elapsed) for n, m in self.metrics.items()},
             events=list(self.events),
-            configuration_errors=[] if self.observation_only else readiness(
-                self.config, self.hardware, ranges=self.protocol_ranges or None,
-            ),
         )
+        if statistics:
+            result.update(
+                metrics={n: m.snapshot(elapsed) for n, m in self.metrics.items()},
+                metrics_timestamp=now,
+                transport={bus: dict(values) for bus, values in self.backend.transport.items()},
+                configuration_errors=[] if self.observation_only else readiness(
+                    self.config, self.hardware, ranges=self.protocol_ranges or None,
+                ),
+            )
+        return result

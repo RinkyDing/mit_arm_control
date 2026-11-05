@@ -8,12 +8,28 @@ from . import protocol as p
 from .config import MODELS
 
 
+# 仅订阅状态类错误；不把逐位错误/仲裁丢失流量加入实时收包路径。
+CAN_ERROR_MASK = 0x001 | 0x004 | 0x020 | 0x040 | 0x100
+CAN_RAW_ERR_FILTER = getattr(socket, 'CAN_RAW_ERR_FILTER', 2)
+SO_RXQ_OVFL = getattr(socket, 'SO_RXQ_OVFL', 40)
+
+
+def transport_counters():
+    return dict(error_frames=0, bus_off=0, ack_errors=0, controller_errors=0,
+                tx_timeouts=0, restarted=0, rx_queue_dropped=0,
+                last_error_classes=None, last_error_timestamp=None)
+
+
 # 实机适配层：只负责协议收发，生命周期由 Controller 编排。
 class SocketCAN:
     def __init__(self, joints, clock=time.monotonic):
         self.joints, self.clock = joints, clock
         self.feedback, self.parameters, self.sockets = {}, {}, {}
         self._round_robin = 0
+        self.last_feedback_name = None
+        self.feedback_revision = 0
+        self._mit_cache = {}
+        self.transport = {}
         # arm 成功读取全组量程后统一替换；启动前默认量程仅用于诊断解析。
         self.protocol_ranges = {}
         self.rx_seq = {j['name']: 0 for j in joints}
@@ -22,32 +38,85 @@ class SocketCAN:
                 s = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
                 self.sockets[bus] = s
                 s.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FD_FRAMES, 1)
+                # 只接收本总线配置的标准回复 ID；EFF/RTR 位也参与匹配。
+                filters = b''.join(struct.pack('=II', j['master_id'], 0xC00007FF)
+                                   for j in joints if j['bus'] == bus)
+                s.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FILTER, filters)
+                s.setsockopt(socket.SOL_CAN_RAW, CAN_RAW_ERR_FILTER,
+                             struct.pack('=I', CAN_ERROR_MASK))
+                s.setsockopt(socket.SOL_SOCKET, SO_RXQ_OVFL, 1)
+                self.transport[bus] = transport_counters()
                 # 使用内核接收时间戳，避免把队列中积压的旧帧误认为新反馈。
                 s.setsockopt(socket.SOL_SOCKET, getattr(socket, 'SO_TIMESTAMPNS', 35), 1)
                 s.setblocking(False)
                 s.bind((bus,))
+            self._socket_list = tuple(self.sockets.values())
+            self._bus_by_socket = {s: bus for bus, s in self.sockets.items()}
+            self._joint_by_id = {(j['bus'], j['master_id']): j for j in joints}
+            self._queries = {j['name']: self.encode(p.register_request(j, p.STATUS)) for j in joints}
         except BaseException:
             self.close()
             raise
 
-    def send(self, frame):
+    @staticmethod
+    def encode(frame):
         # Linux canfd_frame 共 72 字节；flags=1 开启 BRS，MIT 有效载荷仍为 8 字节。
-        raw = struct.pack(
+        return struct.pack(
             '=IBBBB64s', frame.can_id, len(frame.data), 1, 0, 0,
-            frame.data.ljust(64, b'\x00'),
+            frame.data,
         )
+
+    def send(self, frame):
+        raw = self.encode(frame)
         if self.sockets[frame.bus].send(raw) != 72:
             raise OSError('short CAN FD write')
 
+    def wait(self, timeout):
+        # 等待接收或下一次调度，不消耗报文；运行时保留 200 μs 等待上限。
+        select.select(self._socket_list, [], [], timeout)
+
     def poll(self, timeout=0):
-        ready, _, _ = select.select(list(self.sockets.values()), [], [], timeout)
-        if not ready:
+        # 周期收包直接读非阻塞 socket，省去每帧一次 select；事务等待才 select。
+        self.last_feedback_name = None
+        sockets = self._socket_list
+        if timeout:
+            sockets, _, _ = select.select(sockets, [], [], timeout)
+        for _ in range(len(sockets)):
+            s = sockets[self._round_robin % len(sockets)]
+            self._round_robin += 1
+            try:
+                raw, ancillary, flags, _ = s.recvmsg(72, 128)
+                break
+            except BlockingIOError:
+                continue
+        else:
             return False
-        # 每次最多处理一帧；控制循环决定接收预算，多总线就绪时轮询选择。
-        s = ready[self._round_robin % len(ready)]
-        self._round_robin += 1
-        raw, ancillary, flags, _ = s.recvmsg(72, 128)
         if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+            return True
+        bus = self._bus_by_socket[s]
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == SO_RXQ_OVFL and len(data) >= 4:
+                # Linux 给出此 socket 自创建以来的累计丢包数（uint32）。
+                self.transport[bus]['rx_queue_dropped'] = struct.unpack_from('=I', data)[0]
+        if len(raw) not in (16, 72):
+            return True
+        can_id = struct.unpack_from('=I', raw)[0]
+        size = raw[4]
+        if size > (64 if len(raw) == 72 else 8):
+            return True
+        if can_id & 0x20000000:
+            counters = self.transport[bus]
+            counters['error_frames'] += 1
+            counters['last_error_classes'] = can_id & 0x1FFFFFFF
+            counters['last_error_timestamp'] = self.clock()
+            for mask, key in ((1, 'tx_timeouts'), (4, 'controller_errors'),
+                              (32, 'ack_errors'), (64, 'bus_off'), (256, 'restarted')):
+                counters[key] += bool(can_id & mask)
+            return True  # 总线错误永远不能刷新电机反馈有效期。
+        if can_id & 0xC0000000:
+            return True
+        j = self._joint_by_id.get((bus, can_id))
+        if j is None:
             return True
         received_at = None
         for level, kind, data in ancillary:
@@ -59,40 +128,41 @@ class SocketCAN:
                     received_at = self.clock()-max(0., age)
         if received_at is None:
             return True  # 缺失时间戳的实机帧不能刷新反馈有效期。
-        if len(raw) not in (16, 72):
-            return True
-        can_id = struct.unpack_from('=I', raw)[0]
-        if can_id & 0xE0000000:  # 扩展帧、远程帧及 CAN 错误帧不作为电机反馈。
-            return True
-        size = raw[4]
-        if size > (64 if len(raw) == 72 else 8):
-            return True
-        bus = next(b for b, sock in self.sockets.items() if sock is s)
         frame = p.Frame(bus, can_id, raw[8:8+size], len(raw) == 72, raw[5])
-        for j in self.joints:
-            decoded = p.decode(j, frame, self.protocol_ranges.get(j['name']))
-            if decoded is None:
-                continue
-            kind, data = decoded
-            # 参数事务与运动反馈分流：参数回复不能刷新运动反馈的时间或计数。
-            if kind == 'parameter':
-                op, rid, value = data
-                self.parameters[(j['name'], op, rid)] = (self.clock(), value)
-            else:
-                data['timestamp'] = received_at
-                self.feedback[j['name']] = data
-                self.rx_seq[j['name']] += 1
-            break
+        decoded = p.decode(j, frame, self.protocol_ranges.get(j['name']))
+        if decoded is None:
+            return True
+        kind, data = decoded
+        # 参数事务与运动反馈分流：参数回复不能刷新运动反馈的时间或计数。
+        if kind == 'parameter':
+            op, rid, value = data
+            self.parameters[(j['name'], op, rid)] = (self.clock(), value)
+        else:
+            data['timestamp'] = received_at
+            self.feedback[j['name']] = data
+            self.rx_seq[j['name']] += 1
+            self.last_feedback_name = j['name']
+            self.feedback_revision += 1
         return True
 
     def special(self, j, code):
         self.send(p.special(j, code))
 
     def refresh(self, j):
-        self.send(p.register_request(j, p.STATUS))
+        # 查询帧不随目标/量程变化，避免每周期重新构造。
+        if self.sockets[j['bus']].send(self._queries[j['name']]) != 72:
+            raise OSError('short CAN FD write')
 
     def mit(self, j, target):
-        self.send(p.pack_mit(j, target, self.protocol_ranges.get(j['name'])))
+        # 每轴仅缓存一份已验证帧；值、路由或运行时量程变化都会重新编码。
+        ranges = tuple(self.protocol_ranges.get(j['name'], MODELS[j['model']]))
+        key = (j['bus'], j['can_id'], ranges, *(target[k] for k in p.FIELDS))
+        cached = self._mit_cache.get(j['name'])
+        if cached is None or cached[0] != key:
+            cached = (key, self.encode(p.pack_mit(j, target, ranges)))
+            self._mit_cache[j['name']] = cached
+        if self.sockets[j['bus']].send(cached[1]) != 72:
+            raise OSError('short CAN FD write')
 
     def register(self, j, op, rid, value=0, interrupt=lambda: None):
         # 逐台串行参数事务：先排空并清除旧缓存，再等待本轮响应。
@@ -126,6 +196,9 @@ class SimBackend:
     def __init__(self, joints, clock=time.monotonic):
         self.joints, self.clock = joints, clock
         self.feedback, self.parameters = {}, {}
+        self.last_feedback_name = None
+        self.feedback_revision = 0
+        self.transport = {}
         # arm 成功读取全组量程后统一替换；启动前默认量程仅用于诊断解析。
         self.protocol_ranges = {}
         self.rx_seq = {j['name']: 0 for j in joints}
@@ -159,6 +232,7 @@ class SimBackend:
         self.queue.append((name, dict(self.state[name])))
 
     def poll(self, timeout=0):
+        self.last_feedback_name = None
         if not self.queue:
             if timeout:
                 time.sleep(timeout)
@@ -167,7 +241,13 @@ class SimBackend:
         data['timestamp'] = self.clock()
         self.feedback[name] = data
         self.rx_seq[name] += 1
+        self.last_feedback_name = name
+        self.feedback_revision += 1
         return True
+
+    def wait(self, timeout):
+        if not self.queue:
+            time.sleep(timeout)
 
     def special(self, j, code):
         self._send()

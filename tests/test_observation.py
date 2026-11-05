@@ -127,21 +127,45 @@ class ObservationTests(unittest.TestCase):
         self.assertIn('feedback timeout', self.ctl.reason)
 
     def test_transient_queue_full_retries_without_counting_failed_send(self):
+        self.config['rate_hz'] = 500
         self.ctl.observe()
         self.cycle(2)
         first = self.ctl.send_joints[0]['name']
         before = self.ctl.metrics[first].tx
         self.bus.send_error = True
-        self.cycle(1)
+        self.ctl.step()
         self.assertEqual(self.ctl.state, 'DEGRADED')
         self.assertEqual(self.ctl.metrics[first].tx, before)
         self.assertEqual(self.ctl.metrics[first].tx_queue_full, 1)
         self.bus.send_error = False
-        self.cycle(5)
+        self.clock.now += .0002
+        self.ctl.step()
         self.assertEqual(self.ctl.metrics[first].tx, before)
-        self.cycle(20)
+        self.clock.now += .002
+        self.ctl.step()
         self.assertEqual(self.ctl.state, 'OBSERVING')
+        self.assertIsNone(self.ctl.reason)
         self.assertGreater(self.ctl.metrics[first].tx, before)
+
+    def test_partial_group_congestion_cannot_be_cleared_by_leading_axes(self):
+        self.ctl.observe()
+        original = self.bus.refresh
+        last = self.ctl.send_joints[-1]['name']
+        def send(joint):
+            if joint['name'] == last:
+                raise BlockingIOError(11, 'queue full')
+            original(joint)
+        with patch.object(self.bus, 'refresh', side_effect=send):
+            for _ in range(60):
+                # 模拟仍能收到全部轴的新反馈，单独验证持续发送拥塞期限。
+                for joint in self.config['joints']:
+                    original(joint)
+                self.ctl.step()
+                if self.ctl.state == 'FAULT':
+                    break
+                self.clock.now += .001
+        self.assertEqual(self.ctl.state, 'FAULT')
+        self.assertIn('transmit congestion timeout', self.ctl.reason)
 
     def test_non_transient_send_error_still_faults(self):
         self.ctl.observe()
